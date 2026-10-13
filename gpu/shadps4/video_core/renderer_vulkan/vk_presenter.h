@@ -111,6 +111,18 @@ private:
     void SetExpectedGameSize(s32 width, s32 height);
 
 private:
+    /// gow3 stereo: the left eye (`left`, the guest display image, in TransferSrc) and the
+    /// right eye's twin side by side in `sbs` (half: squeezed into the guest size; full: twice
+    /// as wide). Returns the view to present, in ShaderReadOnly.
+    /// `image_format`: the eyes' storage format (blits copy it as is); `view_format`: how the
+    /// presenter reads the guest image (it can swap channels, e.g. BGRA stored, RGBA read).
+    vk::ImageView ComposeSideBySide(vk::CommandBuffer cmdbuf, vk::Image left, vk::Image right,
+                                    vk::Format image_format, vk::Format view_format,
+                                    vk::Extent2D eye_size, bool full, vk::Extent2D& out_size);
+    VideoCore::UniqueImage sbs_image;
+    vk::UniqueImageView sbs_view;
+    vk::Format sbs_format{};
+
     float expected_ratio{1920.0 / 1080.0f};
     u32 expected_frame_width{1920};
     u32 expected_frame_height{1080};

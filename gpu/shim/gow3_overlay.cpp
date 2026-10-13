@@ -263,6 +263,17 @@ void SliderRow(const char* label, std::atomic<int>& value, int lo, int hi, const
     ImGui::PopID();
 }
 
+void FloatSliderRow(const char* label, std::atomic<float>& value, float lo, float hi,
+                    const char* format, const char* help) {
+    Row(label);
+    float v = value;
+    if (ImGui::SliderFloat("##value", &v, lo, hi, format, ImGuiSliderFlags_AlwaysClamp)) {
+        Store(value, std::clamp(v, lo, hi), true);
+    }
+    Help(help);
+    ImGui::PopID();
+}
+
 const char* UpscalerLabel(int upscaler) {
     switch (upscaler) {
     case Gow3Settings::UpscalerFsr3: return "FSR 3.1";
@@ -385,6 +396,33 @@ void ImageTab() {
         ImGui::EndDisabled();
         ImGui::BeginDisabled(!s.rcas || rcas_blocked);
         SliderRow("Sharpening strength", s.rcas_strength, 0, 100, "%d%%", "How strong the sharpening is.");
+        ImGui::EndDisabled();
+        ImGui::EndTable();
+    }
+    ImGui::SeparatorText("Stereo 3D (side by side)");
+    if (BeginRows("##stereo")) {
+        CheckRow("3D side by side", s.stereo,
+                 "Renders the scene once per eye, left and right halves of the image (3D TVs and "
+                 "glasses). Costs about twice the GPU time of the 3D scene.");
+        ImGui::BeginDisabled(!s.stereo);
+        static const char* const modes[] = {"Half (fits the window)", "Full (twice as wide)"};
+        ChoiceRow("Format", s.stereo_mode, modes, nullptr, 2,
+                  "Half: each eye squeezed into half the width (most 3D TVs). Full: each eye at full "
+                  "size, for a display twice as wide.");
+        FloatSliderRow("Depth", s.stereo_separation, 0.0f, 10.0f, "%.1f%%",
+                       "How far apart far away objects are between the eyes, in percent of the width.");
+        FloatSliderRow("Screen distance", s.stereo_convergence, 1.0f, 200.0f, "%.0f",
+                       "Objects at this distance appear on the screen; nearer ones come out of it. 20 "
+                       "puts Kratos about on the screen.");
+        Row("Defaults");
+        if (ImGui::Button("Reset 3D defaults")) {
+            const Gow3Settings::Values defaults;
+            Store(s.stereo_mode, defaults.stereo_mode.load(), true);
+            Store(s.stereo_separation, defaults.stereo_separation.load(), true);
+            Store(s.stereo_convergence, defaults.stereo_convergence.load(), true);
+        }
+        Help("Format, depth and screen distance back to their defaults (half, 3%, 20).");
+        ImGui::PopID();
         ImGui::EndDisabled();
         ImGui::EndTable();
     }

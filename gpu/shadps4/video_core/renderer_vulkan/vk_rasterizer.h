@@ -11,6 +11,7 @@
 #include "video_core/renderer_vulkan/vk_camera_motion.h"
 #include "video_core/renderer_vulkan/vk_constant_ring.h"
 #include "video_core/renderer_vulkan/vk_scene_resolution.h"
+#include "video_core/renderer_vulkan/vk_stereo.h"
 #include "video_core/renderer_vulkan/vk_object_motion.h"
 #include "video_core/renderer_vulkan/vk_draw_pipe.h"
 #include "video_core/renderer_vulkan/vk_draw_prep.h"
@@ -48,6 +49,10 @@ public:
 
     [[nodiscard]] TemporalUpscaler& GetUpscaler() noexcept {
         return *upscaler;
+    }
+
+    [[nodiscard]] EyeTargets& GetEyeTargets() noexcept {
+        return *eye_targets;
     }
 
     [[nodiscard]] VideoCore::TextureCache& GetTextureCache() noexcept {
@@ -329,6 +334,15 @@ private:
     std::unique_ptr<DrawPreparation> draw_prep;
     std::unique_ptr<CameraMotion> camera_motion; // gow3: motion vectors (docs/upscaler.md)
     std::unique_ptr<SceneTargets> scene_targets;
+    /// gow3 stereo (vk_stereo.h): the right eye's twins; the eye being recorded, and whether
+    /// the current draw runs once per eye (all its targets screen-sized).
+    std::unique_ptr<EyeTargets> eye_targets;
+    u32 active_eye = 0;
+    bool eye_draw = false;
+    /// Records a draw or dispatch (`record`) for the left eye and, when it is an eye draw, again
+    /// for the right eye.
+    template <typename F>
+    void RecordEyes(F&& record);
     bool scene_started = false;
     std::unique_ptr<ObjectMotion> object_motion;
     bool motion_draw = false;

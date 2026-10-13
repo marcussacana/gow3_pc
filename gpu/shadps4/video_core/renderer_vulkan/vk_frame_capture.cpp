@@ -226,7 +226,17 @@ void FrameCapture::BeginPass(const VideoCore::ImageInfo* const* colors, u32 num_
     display = display && targets.size() == 1;
     const bool new_pass = !(pass_open && !entries.empty() && !entries.back().compute &&
                             entries.back().colors == targets);
-    if (display && new_pass) {
+    // GOW3_CAPTURE_SEGMENTS=N: keep recording across N boundaries (a frame can hold several).
+    static const u32 segments = [] {
+        const char* env = std::getenv("GOW3_CAPTURE_SEGMENTS");
+        return env ? std::max(1, std::atoi(env)) : 1;
+    }();
+    static u32 boundaries = 0;
+    if (display && new_pass && state.load(std::memory_order_relaxed) == Recording &&
+        ++boundaries < segments) {
+        entries.push_back({.compute = false, .note = "--- display boundary ---"});
+    } else if (display && new_pass) {
+        boundaries = 0;
         if (state.load(std::memory_order_relaxed) == Recording) {
             Write(last_presented.load(std::memory_order_relaxed));
             entries.clear();

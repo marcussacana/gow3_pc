@@ -381,6 +381,73 @@ static void DumpRaw(const Instance& instance, Scheduler& scheduler, vk::CommandB
     });
 }
 
+vk::ImageView Presenter::ComposeSideBySide(vk::CommandBuffer cmdbuf, vk::Image left,
+                                           vk::Image right, vk::Format image_format,
+                                           vk::Format view_format, vk::Extent2D eye_size, bool full,
+                                           vk::Extent2D& out_size) {
+    const vk::Extent2D size{full ? eye_size.width * 2 : eye_size.width, eye_size.height};
+    if (!sbs_image.image || sbs_image.image_ci.extent.width != size.width ||
+        sbs_image.image_ci.extent.height != size.height ||
+        sbs_image.image_ci.format != image_format || sbs_format != view_format) {
+        // Earlier frames may still read the old image: destroyed once they completed (a Finish
+        // here would end the command buffer this frame is being recorded in).
+        auto old = std::make_shared<std::pair<VideoCore::UniqueImage, vk::UniqueImageView>>(
+            std::move(sbs_image), std::move(sbs_view));
+        draw_scheduler.DeferOperation([old] {});
+        sbs_image = VideoCore::UniqueImage(instance.GetDevice(), instance.GetAllocator());
+        sbs_image.Create(vk::ImageCreateInfo{
+            .flags = vk::ImageCreateFlagBits::eMutableFormat,
+            .imageType = vk::ImageType::e2D,
+            .format = image_format,
+            .extent = {size.width, size.height, 1},
+            .mipLevels = 1,
+            .arrayLayers = 1,
+            .usage = vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferDst,
+        });
+        sbs_view = Check(instance.GetDevice().createImageViewUnique({
+            .image = sbs_image.image,
+            .viewType = vk::ImageViewType::e2D,
+            .format = view_format,
+            .components = {vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eIdentity,
+                           vk::ComponentSwizzle::eIdentity, vk::ComponentSwizzle::eOne},
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        }));
+        sbs_format = view_format;
+    }
+    const auto barrier = [&](vk::ImageLayout from, vk::ImageLayout to, vk::AccessFlags2 access) {
+        const vk::ImageMemoryBarrier2 b{
+            .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .dstAccessMask = access,
+            .oldLayout = from,
+            .newLayout = to,
+            .image = sbs_image.image,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        };
+        cmdbuf.pipelineBarrier2({.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
+    };
+    barrier(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+            vk::AccessFlagBits2::eTransferWrite);
+    const s32 half = s32(size.width / 2);
+    const vk::Offset3D eye_end{s32(eye_size.width), s32(eye_size.height), 1};
+    for (const auto& [src, x0] : {std::pair{left, 0}, std::pair{right, half}}) {
+        const vk::ImageBlit region{
+            .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+            .srcOffsets = std::array{vk::Offset3D{}, eye_end},
+            .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+            .dstOffsets = std::array{vk::Offset3D{x0, 0, 0},
+                                     vk::Offset3D{x0 + half, s32(size.height), 1}},
+        };
+        cmdbuf.blitImage(src, vk::ImageLayout::eTransferSrcOptimal, sbs_image.image,
+                         vk::ImageLayout::eTransferDstOptimal, region, vk::Filter::eLinear);
+    }
+    barrier(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal,
+            vk::AccessFlagBits2::eShaderRead);
+    out_size = size;
+    return *sbs_view;
+}
+
 Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& attribute,
                                VAddr cpu_address) {
     // gow3: GOW3_FRAME_DUMP_TRIGGER=<file>: when the file exists it is removed and this frame's
@@ -469,10 +536,25 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
         }
         image_view = *image.FindView(view_info).image_view;
         image_size = vk::Extent2D{image.info.size.width, image.info.size.height};
-        runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
-                        vk::PipelineStageFlagBits2::eFragmentShader,
-                        vk::AccessFlagBits2::eShaderRead);
-        runtime.FlushBarriers();
+        // gow3 stereo: the right eye's twin of this display image, when the frame drew one.
+        vk::ImageLayout right_layout{};
+        const vk::Image right = Gow3Settings::Get().stereo
+            ? rasterizer->GetEyeTargets().PresentSource(image_id, right_layout) : vk::Image{};
+        if (right) {
+            runtime.Transit(&image, vk::ImageLayout::eTransferSrcOptimal,
+                            vk::PipelineStageFlagBits2::eTransfer,
+                            vk::AccessFlagBits2::eTransferRead);
+            runtime.FlushBarriers();
+            image_view = ComposeSideBySide(draw_scheduler.CommandBuffer(), image.GetImage(), right,
+                                           image.backing->image.image_ci.format,
+                                           view_info.format, image_size,
+                                           Gow3Settings::Get().stereo_mode == 1, image_size);
+        } else {
+            runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
+                            vk::PipelineStageFlagBits2::eFragmentShader,
+                            vk::AccessFlagBits2::eShaderRead);
+            runtime.FlushBarriers();
+        }
     }
     expected_ratio = static_cast<float>(image_size.width) / static_cast<float>(image_size.height);
 

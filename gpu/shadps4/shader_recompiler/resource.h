@@ -218,6 +218,8 @@ struct PushData {
     static constexpr u32 BufOffsetIndex = UdRegsIndex + NUM_USER_DATA_REGS / 4;
     static constexpr u32 MotionParamIndex = BufOffsetIndex + NUM_BUFFERS / 16 + 1;
     static constexpr u32 SceneSizeIndex = MotionParamIndex + 1;
+    static constexpr u32 StereoSepIndex = SceneSizeIndex + 1;
+    static constexpr u32 StereoConvIndex = StereoSepIndex + 1;
 
     float xoffset;
     float yoffset;
@@ -227,13 +229,17 @@ struct PushData {
     std::array<u8, NUM_BUFFERS> buf_offsets;
     u32 motion_param; ///< gow3: object motion parameter index (0: off)
     u32 scene_size; ///< reduced width | height << 16; zero means native pixel coordinates
+    /// gow3 stereo (docs/stereo.md): vertex clip x += sep * (w - conv); 0 is off.
+    float stereo_sep;
+    float stereo_conv;
 
     void AddOffset(u32 binding, u32 offset) {
         ASSERT(offset < 256 && binding < buf_offsets.size());
         buf_offsets[binding] = offset;
     }
 };
-static_assert(sizeof(PushData) <= 128,
-              "PushData size is greater than minimum size guaranteed by Vulkan spec");
+// gow3: 8 bytes past the 128 the Vulkan spec guarantees; desktop GPUs give 256 (checked in
+// Instance).
+static_assert(sizeof(PushData) <= 136, "PushData size is greater than Instance checks");
 
 } // namespace Shader

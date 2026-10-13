@@ -186,9 +186,50 @@ static void EmitFragmentMotion(EmitContext& ctx) {
                     ctx.OpSelect(f32_type, front, dy, zero), valid, depth}));
 }
 
+// gow3 stereo (docs/stereo.md): the eye offset in clip space, x += sep * (w - conv * w / d),
+// with the view depth d taken from z/w (the game's projection: z = A * d + B), so positions
+// written scaled (k * clip, the effects' shaders) get the same parallax. Draws with w == 1
+// (full-screen passes, HUD, orthographic) keep zero parallax.
+// shortcut: A and B are the gameplay camera's (near 0.5); read them per scene if cutscenes differ.
+static constexpr float StereoDepthA = 1.00007f;
+static constexpr float StereoDepthB = -0.500018f;
+static void EmitStereo(EmitContext& ctx) {
+    const Id type{ctx.F32[1]};
+    const auto load = [&](u32 index) {
+        return ctx.OpLoad(type, ctx.OpAccessChain(ctx.TypePointer(spv::StorageClass::PushConstant,
+                                                                  type),
+                                                  ctx.push_data_block, ctx.ConstU32(index)));
+    };
+    const Id sep{load(PushData::StereoSepIndex)};
+    const Id conv{load(PushData::StereoConvIndex)};
+    const Id position{ctx.OpLoad(ctx.F32[4], ctx.output_position)};
+    const Id x{ctx.OpCompositeExtract(type, position, 0u)};
+    const Id z{ctx.OpCompositeExtract(type, position, 2u)};
+    const Id w{ctx.OpCompositeExtract(type, position, 3u)};
+    const Id one{ctx.Constant(type, 1.f)};
+    // w / d = (z - A * w) / B: 1 for an unscaled position.
+    const Id w_over_d{ctx.OpFDiv(type,
+                                 ctx.OpFSub(type, z,
+                                            ctx.OpFMul(type, ctx.Constant(type, StereoDepthA), w)),
+                                 ctx.Constant(type, StereoDepthB))};
+    // Parallax in units of the separation, 1 - conv / d, limited to -1 in front of the screen
+    // (as much as at infinity): close-ups (the menu's Kratos, d ~ 2) would leave the image.
+    const Id ratio{ctx.OpFSub(type, one, ctx.OpFDiv(type, ctx.OpFMul(type, conv, w_over_d), w))};
+    const Id limited{ctx.OpFMax(type, ratio, ctx.Constant(type, -1.f))};
+    const Id parallax{ctx.OpFMul(type, w, limited)};
+    const Id shift{ctx.OpSelect(type, ctx.OpFOrdEqual(ctx.U1[1], w, one), ctx.Constant(type, 0.f),
+                                ctx.OpFMul(type, sep, parallax))};
+    ctx.OpStore(ctx.output_position,
+                ctx.OpCompositeInsert(ctx.F32[4], ctx.OpFAdd(type, x, shift), position, 0u));
+}
+
 void EmitEpilogue(EmitContext& ctx) {
     if (Sirit::ValidId(ctx.motion_out_cur)) {
         EmitVertexMotion(ctx);
+    }
+    // After the motion store: motion vectors keep the center camera.
+    if (ctx.hw_stage == HwStage::Vertex && !ctx.runtime_info.hw.vs.clip_disable) {
+        EmitStereo(ctx);
     }
     if (Sirit::ValidId(ctx.motion_frag_out)) {
         EmitFragmentMotion(ctx);

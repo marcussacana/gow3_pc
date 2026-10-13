@@ -105,6 +105,14 @@ void Set(Values& v, const std::string& key, const std::string& value) {
         v.rcas = i != 0;
     } else if (key == "rcas_strength") {
         v.rcas_strength = Gow3Graphics::ParseRcasStrength(value.empty() ? -1 : i);
+    } else if (key == "stereo") {
+        v.stereo = i != 0;
+    } else if (key == "stereo_mode") {
+        v.stereo_mode = value == "full" ? 1 : 0;
+    } else if (key == "stereo_separation") {
+        v.stereo_separation = Clamp(f, 0.0f, 10.0f);
+    } else if (key == "stereo_convergence") {
+        v.stereo_convergence = Clamp(f, 1.0f, 1000.0f);
     } else if (key == "frames_queued") {
         v.frames_queued = Gow3Graphics::ParseFramesQueued(value.empty() ? -1 : i);
     } else if (key == "render_resolution") {
@@ -309,6 +317,9 @@ void Save() {
                  Gow3Graphics::Resolutions[std::clamp(v.render_resolution.load(), 0, 5)].data(),
                  v.engine_fps.load(), int(v.deferred_readback.load()), int(v.stale_readback.load()),
                  int(v.restart_unconfirmed.load()));
+    std::fprintf(file, "stereo=%d\nstereo_mode=%s\nstereo_separation=%.2f\nstereo_convergence=%.1f\n",
+                 int(v.stereo.load()), v.stereo_mode ? "full" : "half",
+                 v.stereo_separation.load(), v.stereo_convergence.load());
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
                                                   : v.live_resolution ? "1" : "0");

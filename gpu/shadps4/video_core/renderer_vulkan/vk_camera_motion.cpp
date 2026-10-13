@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 #include "gow3_toggles.h"
 
@@ -240,6 +241,42 @@ void CameraMotion::OnConstants(const float* data) {
     frame_has_camera = true;
 }
 
+void CameraMotion::DumpConstants(VAddr address, const void* data, u64 size, bool gbuffer) {
+    if (size < 256 || size > 4096) {
+        return;
+    }
+    static const char* trigger = std::getenv("GOW3_CAMERA_DUMP");
+    if (!trigger) {
+        return;
+    }
+    static bool announced = false;
+    if (!announced) {
+        announced = true;
+        std::printf("Camera dump: armed, trigger %s\n", trigger);
+        std::fflush(stdout);
+    }
+    if (frame_number >= dump_until && std::remove(trigger) == 0) {
+        dump_until = frame_number + 240;
+        std::printf("Camera dump: frames %llu-%llu\n", (unsigned long long)frame_number,
+                    (unsigned long long)dump_until);
+        std::fflush(stdout);
+    }
+    if (frame_number >= dump_until) {
+        return;
+    }
+    static FILE* out = std::fopen((std::string(trigger) + ".bin").c_str(), "ab");
+    static u64 written = 0;
+    if (!out || written > (64ull << 20)) {
+        return;
+    }
+    written += 32 + size;
+    // Record: frame, address, gbuffer flag, size (u64 each), then the bytes.
+    const u64 header[4] = {frame_number, address, gbuffer ? 1ull : 0ull, size};
+    std::fwrite(header, sizeof(header), 1, out);
+    std::fwrite(data, size, 1, out);
+    std::fflush(out);
+}
+
 void CameraMotion::OnGBufferPass(VideoCore::ImageId depth) {
     depth_id = depth;
 }
@@ -250,6 +287,7 @@ void CameraMotion::OnDisplayPass(VideoCore::ImageId frame) {
     }
     if (!frame_has_camera) InvalidateHistory();
     frame_has_camera = false;
+    ++frame_number;
     depth_id = {};
 }
 

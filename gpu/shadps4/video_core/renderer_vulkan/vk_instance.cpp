@@ -11,6 +11,7 @@
 #include "common/debug.h"
 #include "common/types.h"
 #include "imgui/renderer/imgui_core.h"
+#include "shader_recompiler/resource.h"
 #include "sdl_window.h"
 #include "video_core/renderer_vulkan/liverpool_to_vk.h"
 #include "video_core/renderer_vulkan/vk_dlss.h"
@@ -188,6 +189,10 @@ Instance::Instance(const Frontend::WindowSystemInfo& window_info, s32 physical_d
                "Vulkan {}.{} is required, but only {}.{} is supported by device!",
                VK_VERSION_MAJOR(TargetVulkanApiVersion), VK_VERSION_MINOR(TargetVulkanApiVersion),
                VK_VERSION_MAJOR(properties.apiVersion), VK_VERSION_MINOR(properties.apiVersion));
+    // gow3: Shader::PushData holds the stereo parameters past the 128 bytes Vulkan guarantees.
+    ASSERT_MSG(properties.limits.maxPushConstantsSize >= sizeof(Shader::PushData),
+               "{} bytes of push constants are required, the device gives {}",
+               sizeof(Shader::PushData), properties.limits.maxPushConstantsSize);
 
     CreateDevice();
     CollectPhysicalMemoryInfo();

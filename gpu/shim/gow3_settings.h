@@ -72,6 +72,14 @@ struct Values {
     /// Set by the presenter: the game's image and the window it is shown in, in pixels.
     std::atomic<int> image_width{0}, image_height{0}, window_width{0}, window_height{0};
     std::atomic<int> frames_queued{1};
+    /// Stereo 3D side by side (docs/stereo.md). Live. Mode 0: half (each eye squeezed into
+    /// half the window), 1: full (each eye at full size, the image twice as wide). Separation:
+    /// parallax at infinity in percent of the image width; convergence: the screen plane's
+    /// distance in game units (zero parallax there).
+    std::atomic<bool> stereo{false};
+    std::atomic<int> stereo_mode{0};
+    std::atomic<float> stereo_separation{3.0f};
+    std::atomic<float> stereo_convergence{20.0f};
     // Startup: run.py turns them into patches and environment variables; "Apply and restart".
     std::atomic<int> render_resolution{0};
     std::atomic<int> engine_fps{120};

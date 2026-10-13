@@ -72,6 +72,10 @@ public:
     /// A bound constant buffer of 864 bytes: checks the scene constant signature.
     void OnConstants(const float* data);
 
+    /// Debug (docs/stereo.md): every constant buffer of 256-4096 bytes bound for 240 frames
+    /// after the file named by GOW3_CAMERA_DUMP appears (it is removed), into "<that path>.bin".
+    void DumpConstants(VAddr address, const void* data, u64 size, bool gbuffer);
+
     /// The G-buffer pass (5+ color targets): its depth is the scene depth.
     void OnGBufferPass(VideoCore::ImageId depth);
 
@@ -112,6 +116,8 @@ private:
     /// Debug: the last two finished frames (RGBA8 packed), for the reprojection check.
     std::unique_ptr<VideoCore::Buffer> frames[2];
     u32 frame_index = 0;
+    u64 frame_number = 0;
+    u64 dump_until = 0;
 };
 
 } // namespace Vulkan

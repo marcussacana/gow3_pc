@@ -18,6 +18,7 @@ namespace Vulkan {
 
 class GpuProfiler;
 class SceneTargets;
+class EyeTargets;
 
 class Instance;
 class Scheduler;
@@ -41,6 +42,7 @@ public:
 
     void TickFrame();
     SceneTargets* scene_targets = nullptr;
+    EyeTargets* eye_targets = nullptr; ///< gow3 stereo (vk_stereo.h)
 
     void CopyBuffer(const VideoCore::Buffer* src, const VideoCore::Buffer* dst,
                     std::span<const vk::BufferCopy> copies);
