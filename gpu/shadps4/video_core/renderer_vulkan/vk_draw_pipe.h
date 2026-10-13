@@ -32,8 +32,17 @@ class DrawPipe {
 public:
     /// Runs a packet on stage B.
     using Handler = void (*)(void* context, const u8* packet, u32 size);
+    /// Stage B, when Drain() waits while stage B holds deferred work (SetDeferred): records it
+    /// (gow3 stereo batches). Stage B then has no packet left.
+    using IdleHandler = void (*)(void* context);
 
-    DrawPipe(Handler handler_, void* context_) : handler{handler_}, context{context_} {
+    /// Stage B: it holds recorded-later work that Drain() must wait for.
+    void SetDeferred(bool value) {
+        deferred.store(value, std::memory_order_release);
+    }
+
+    DrawPipe(Handler handler_, void* context_, IdleHandler idle_ = nullptr)
+        : handler{handler_}, idle{idle_}, context{context_} {
         ring = std::make_unique<u8[]>(Capacity);
         thread = std::jthread([this](std::stop_token stop) { Run(stop); });
     }
@@ -103,14 +112,32 @@ public:
 
     /// Stage A: waits until stage B has run every committed packet.
     void Drain(u32 reason = ReasonRasterizer) {
-        if (consumed.load(std::memory_order_acquire) == head) {
+        if (consumed.load(std::memory_order_acquire) == head &&
+            !deferred.load(std::memory_order_acquire)) {
             return;
+        }
+        if (deferred.load(std::memory_order_acquire)) {
+            flush_request.store(true, std::memory_order_seq_cst);
+            wake.fetch_add(1, std::memory_order_seq_cst);
+            wake.notify_one();
         }
         ++drains;
         const u32 slot = reason < NumReasons ? reason : ReasonRasterizer;
         ++drains_by_reason[slot];
         const u64 start = __rdtsc();
-        for (u32 spins = 0; consumed.load(std::memory_order_acquire) != head; ++spins) {
+        const auto busy = [&] {
+            return consumed.load(std::memory_order_acquire) != head ||
+                   deferred.load(std::memory_order_acquire);
+        };
+        for (u32 spins = 0; busy(); ++spins) {
+            // Stage B may defer work only while this waits (its last packet): ask again then.
+            if (consumed.load(std::memory_order_acquire) == head &&
+                deferred.load(std::memory_order_acquire) &&
+                !flush_request.load(std::memory_order_acquire)) {
+                flush_request.store(true, std::memory_order_seq_cst);
+                wake.fetch_add(1, std::memory_order_seq_cst);
+                wake.notify_one();
+            }
             if (spins < 4096) {
                 __builtin_ia32_pause();
             } else {
@@ -179,11 +206,20 @@ private:
                     if (stop.stop_requested()) {
                         return;
                     }
+                    if (flush_request.load(std::memory_order_acquire)) {
+                        flush_request.store(false, std::memory_order_relaxed);
+                        if (idle && deferred.load(std::memory_order_acquire)) {
+                            idle(context);
+                        }
+                        deferred.store(false, std::memory_order_release);
+                    }
                     __builtin_ia32_pause();
                     if (!(spins & 255) && std::chrono::steady_clock::now() >= spin_until) {
                         const u32 seen = wake.load(std::memory_order_seq_cst);
                         sleeping.store(true, std::memory_order_seq_cst);
+                        // (Drain() sets flush_request before it bumps `wake`.)
                         if (published.load(std::memory_order_seq_cst) == at &&
+                            !flush_request.load(std::memory_order_seq_cst) &&
                             !stop.stop_requested()) {
                             wake.wait(seen, std::memory_order_seq_cst);
                         }
@@ -200,14 +236,15 @@ private:
             }
             const u64 start = __rdtsc();
             handler(context, reinterpret_cast<const u8*>(header + 1), header->payload);
-            busy_cycles.fetch_add(__rdtsc() - start, std::memory_order_relaxed);
             at += header->size;
+            busy_cycles.fetch_add(__rdtsc() - start, std::memory_order_relaxed);
             consumed.store(at, std::memory_order_release);
         }
     }
 
     static inline thread_local bool on_stage_b = false;
     Handler handler;
+    IdleHandler idle;
     void* context;
     std::unique_ptr<u8[]> ring;
     u64 head = 0; ///< stage A's write position
@@ -215,6 +252,7 @@ private:
     alignas(64) std::atomic<u64> published{0};
     alignas(64) std::atomic<u64> consumed{0};
     alignas(64) std::atomic<u32> wake{0};
+    std::atomic<bool> deferred{false}, flush_request{false};
     std::atomic<bool> sleeping{false};
     std::atomic<u32> stage_b_tid{0};
     std::jthread thread;

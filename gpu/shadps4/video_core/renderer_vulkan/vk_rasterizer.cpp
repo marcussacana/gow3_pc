@@ -68,7 +68,7 @@ Rasterizer::Rasterizer(const Instance& instance_, Scheduler& scheduler_, Runtime
     GpuProfiler::Init(instance, scheduler);
     if (DrawPipeWanted()) {
         constant_ring = std::make_unique<ConstantRing>(instance, scheduler);
-        draw_pipe = std::make_unique<DrawPipe>(&RunDrawPacket, this);
+        draw_pipe = std::make_unique<DrawPipe>(&RunDrawPacket, this, &FlushEyeBatchIdle);
     }
     // gow3: this thread joins the texture binding helper before it changes image state.
     runtime.SetImageAccessHook(&JoinBindHelper, this);
@@ -765,13 +765,157 @@ void Rasterizer::RecordEyes(F&& record) {
     eye_targets->duplicating = false;
 }
 
+struct Rasterizer::ParsedPacket {
+    const DrawPacket* packet;
+    const AmdGpu::ComputeProgram* cs;
+    const IndirectDraw* indirect;
+};
+
+void Rasterizer::UndoBlocks(const u32* undo) {
+    const u32 count = *undo++;
+    for (u32 i = 0; i < count; ++i) {
+        const u32 block = *undo++;
+        std::memcpy(pipe_regs.reg_array.data() + block * AmdGpu::RegDirty::BlockWords, undo,
+                    AmdGpu::RegDirty::BlockWords * sizeof(u32));
+        undo += AmdGpu::RegDirty::BlockWords;
+    }
+}
+
+void Rasterizer::FlushEyeBatch() {
+    auto& batch = eye_batch;
+    if (batch.packets.empty()) {
+        return;
+    }
+    // The registers after the batch, back to before its first packet.
+    for (size_t i = batch.packets.size(); i-- > 0;) {
+        UndoBlocks(batch.undo.data() + batch.undo_at[i]);
+    }
+    active_eye = Stereo::Right;
+    eye_targets->duplicating = true;
+    for (const auto& [offset, size] : batch.packets) {
+        const auto* data = reinterpret_cast<const u8*>(batch.data.data() + offset);
+        const auto parsed = ApplyPacket(data, size, false, nullptr);
+        eye_draw = true;
+        // (The draw preparation may be retired by now: the bindings are read again.)
+        if (parsed.indirect) {
+            DrawIndirectRecord(static_cast<const GraphicsPipeline*>(parsed.packet->pipeline),
+                               parsed.packet->is_indexed, *parsed.indirect);
+        } else {
+            DrawRecord(static_cast<const GraphicsPipeline*>(parsed.packet->pipeline), nullptr,
+                       parsed.packet->is_indexed, parsed.packet->index_offset);
+        }
+        Shader::Info::num_ud_snapshots = 0;
+        num_ring_stages = 0;
+    }
+    active_eye = Stereo::Left;
+    eye_draw = false;
+    eye_targets->duplicating = false;
+    // The batch's constants stayed allocated until its right eye was recorded.
+    if (constant_ring) {
+        constant_ring->Stamp(batch.ring_end);
+    }
+    batch.data.clear();
+    batch.packets.clear();
+    batch.undo.clear();
+    batch.undo_at.clear();
+    if (draw_pipe) {
+        draw_pipe->SetDeferred(false);
+    }
+}
+
 void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     auto& self = *static_cast<Rasterizer*>(context);
     if (*reinterpret_cast<const PacketKind*>(data) == PacketKind::Task) {
+        self.FlushEyeBatch();
         const auto& task = *reinterpret_cast<const TaskPacket*>(data);
         task.task(self, data + sizeof(TaskPacket));
         return;
     }
+    const auto& head = *reinterpret_cast<const DrawPacket*>(data);
+    const bool draw = head.kind == PacketKind::Draw || head.kind == PacketKind::Indirect;
+    const bool batching = draw && !head.regs_reset &&
+                          Gow3Settings::Get().stereo.load(std::memory_order_relaxed) &&
+                          !self.scene_targets->Reduced();
+    if (!batching) {
+        self.FlushEyeBatch();
+    }
+    self.packet_undo.clear();
+    auto parsed = self.ApplyPacket(data, size, true, batching ? &self.packet_undo : nullptr);
+    const auto& packet = *parsed.packet;
+    const auto* cs = parsed.cs;
+    const auto* indirect = parsed.indirect;
+    if (batching) {
+        // Is it an eye draw? A single-eye draw first lets the batch's right eye run.
+        const auto* pipeline = static_cast<const GraphicsPipeline*>(packet.pipeline);
+        self.active_eye = Stereo::Left;
+        self.PrepareRenderState(pipeline);
+        if (!self.eye_draw && !self.eye_batch.packets.empty()) {
+            self.UndoBlocks(self.packet_undo.data());
+            self.FlushEyeBatch();
+            parsed = self.ApplyPacket(data, size, false, nullptr);
+        }
+        if (indirect) {
+            self.DrawIndirectRecord(pipeline, packet.is_indexed, *indirect);
+        } else {
+            self.DrawRecord(pipeline, packet.prepared, packet.is_indexed, packet.index_offset);
+        }
+        Shader::Info::num_ud_snapshots = 0;
+        self.num_ring_stages = 0;
+        if (self.eye_draw) {
+            auto& batch = self.eye_batch;
+            const u32 offset = u32(batch.data.size());
+            batch.data.resize(offset + (size + 7) / 8);
+            std::memcpy(batch.data.data() + offset, data, size);
+            batch.packets.emplace_back(offset, size);
+            batch.undo_at.push_back(u32(batch.undo.size()));
+            batch.undo.insert(batch.undo.end(), self.packet_undo.begin(), self.packet_undo.end());
+            batch.ring_end = packet.ring_end;
+            self.draw_pipe->SetDeferred(true);
+            return; // stamped when the batch is flushed
+        }
+        self.eye_draw = false;
+        self.eye_targets->duplicating = false;
+        if (self.constant_ring) {
+            self.constant_ring->Stamp(packet.ring_end);
+        }
+        return;
+    }
+    if (packet.kind == PacketKind::Special) {
+        // A draw FilterDraw handles (fast clear elimination, resolve, depth copy, skip).
+        FrameCapture::Poll();
+        self.scheduler.PopPendingOperations();
+        self.FilterDraw();
+    } else if (cs) {
+        stage_cs = cs;
+        const auto* pipeline = static_cast<const ComputePipeline*>(packet.pipeline);
+        if (indirect) {
+            self.DispatchIndirectRecord(pipeline, indirect->args, indirect->stride);
+        } else {
+            self.DispatchRecord(pipeline);
+        }
+        stage_cs = nullptr;
+    } else if (indirect) {
+        self.RecordEyes([&] {
+            self.DrawIndirectRecord(static_cast<const GraphicsPipeline*>(packet.pipeline),
+                                    packet.is_indexed, *indirect);
+        });
+    } else {
+        self.RecordEyes([&] {
+            self.DrawRecord(static_cast<const GraphicsPipeline*>(packet.pipeline),
+                            packet.prepared, packet.is_indexed, packet.index_offset);
+        });
+    }
+    Shader::Info::num_ud_snapshots = 0;
+    self.num_ring_stages = 0;
+    if (self.constant_ring) {
+        self.constant_ring->Stamp(packet.ring_end);
+    }
+}
+
+Rasterizer::ParsedPacket Rasterizer::ApplyPacket(const u8* data, u32 size, bool verify,
+                                                 std::vector<u32>* undo) {
+    auto& self = *this;
+    (void)verify; // the verification (GOW3 draw pipe checks) only prints
     const auto& packet = *reinterpret_cast<const DrawPacket*>(data);
     const u8* in = data + sizeof(DrawPacket);
     const auto* blocks = reinterpret_cast<const u16*>(in);
@@ -780,9 +924,16 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     if (packet.regs_reset) {
         regs.SetDefaults();
     }
+    if (undo) {
+        undo->push_back(packet.num_blocks);
+    }
     for (u32 i = 0; i < packet.num_blocks; ++i) {
-        std::memcpy(regs.reg_array.data() + blocks[i] * AmdGpu::RegDirty::BlockWords, in,
-                    AmdGpu::RegDirty::BlockWords * sizeof(u32));
+        u32* target = regs.reg_array.data() + blocks[i] * AmdGpu::RegDirty::BlockWords;
+        if (undo) {
+            undo->push_back(blocks[i]);
+            undo->insert(undo->end(), target, target + AmdGpu::RegDirty::BlockWords);
+        }
+        std::memcpy(target, in, AmdGpu::RegDirty::BlockWords * sizeof(u32));
         in += AmdGpu::RegDirty::BlockWords * sizeof(u32);
     }
     ASSERT(packet.num_stages <= Shader::Info::MaxUdSnapshots);
@@ -870,36 +1021,7 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     stage_regs = &regs;
     self.pipe_cb_extent = packet.cb_extent;
     self.pipe_db_extent = packet.db_extent;
-    if (packet.kind == PacketKind::Special) {
-        // A draw FilterDraw handles (fast clear elimination, resolve, depth copy, skip).
-        FrameCapture::Poll();
-        self.scheduler.PopPendingOperations();
-        self.FilterDraw();
-    } else if (cs) {
-        stage_cs = cs;
-        const auto* pipeline = static_cast<const ComputePipeline*>(packet.pipeline);
-        if (indirect) {
-            self.DispatchIndirectRecord(pipeline, indirect->args, indirect->stride);
-        } else {
-            self.DispatchRecord(pipeline);
-        }
-        stage_cs = nullptr;
-    } else if (indirect) {
-        self.RecordEyes([&] {
-            self.DrawIndirectRecord(static_cast<const GraphicsPipeline*>(packet.pipeline),
-                                    packet.is_indexed, *indirect);
-        });
-    } else {
-        self.RecordEyes([&] {
-            self.DrawRecord(static_cast<const GraphicsPipeline*>(packet.pipeline),
-                            packet.prepared, packet.is_indexed, packet.index_offset);
-        });
-    }
-    Shader::Info::num_ud_snapshots = 0;
-    self.num_ring_stages = 0;
-    if (self.constant_ring) {
-        self.constant_ring->Stamp(packet.ring_end);
-    }
+    return {&packet, cs, indirect};
 }
 
 void Rasterizer::PrintPipeStats() {

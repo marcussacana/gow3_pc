@@ -242,6 +242,16 @@ private:
     /// The compute registers of the dispatch being recorded.
     const AmdGpu::ComputeProgram& CsRegs() const;
     static void RunDrawPacket(void* rasterizer, const u8* packet, u32 size);
+    struct ParsedPacket;
+    /// Applies a packet's registers (their old values appended to `undo` when given), stage
+    /// tables and extents (RunDrawPacket; FlushEyeBatch replays copies).
+    ParsedPacket ApplyPacket(const u8* data, u32 size, bool verify, std::vector<u32>* undo);
+    void UndoBlocks(const u32* undo);
+    /// gow3 stereo: records the right eye of the batched draws (see eye_batch).
+    void FlushEyeBatch();
+    static void FlushEyeBatchIdle(void* rasterizer) {
+        static_cast<Rasterizer*>(rasterizer)->FlushEyeBatch();
+    }
     struct RingBinding;
     void CollectRingBindings(const Shader::Info& stage, const PreparedDraw* prepared,
                              boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out);
@@ -339,6 +349,19 @@ private:
     std::unique_ptr<EyeTargets> eye_targets;
     u32 active_eye = 0;
     bool eye_draw = false;
+    /// gow3 stereo, draw pipe: consecutive eye draws are recorded for the left eye, then all
+    /// again for the right eye (FlushEyeBatch), so the render pass changes once per batch, not
+    /// at every draw. A batch ends before anything else (a single-eye draw, a dispatch, a task)
+    /// and when the pipe runs dry. Packet copies and the old values of the registers each one
+    /// set (replayed from the batch's starting registers).
+    struct EyeBatch {
+        std::vector<u64> data;               ///< packet copies (8-byte aligned)
+        std::vector<std::pair<u32, u32>> packets; ///< word offset in `data`, byte size
+        std::vector<u32> undo;                 ///< UndoBlocks records, one per packet
+        std::vector<u32> undo_at;
+        u64 ring_end = 0;
+    } eye_batch;
+    std::vector<u32> packet_undo;
     /// Records a draw or dispatch (`record`) for the left eye and, when it is an eye draw, again
     /// for the right eye.
     template <typename F>
