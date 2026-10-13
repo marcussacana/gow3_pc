@@ -255,7 +255,11 @@ void CameraMotion::DumpConstants(VAddr address, const void* data, u64 size, bool
         std::printf("Camera dump: armed, trigger %s\n", trigger);
         std::fflush(stdout);
     }
-    if (frame_number >= dump_until && std::remove(trigger) == 0) {
+    // The trigger file is checked once per frame: a file system call per binding cost
+    // most of the draw recording thread.
+    static u64 checked_frame = ~0ull;
+    if (frame_number >= dump_until && checked_frame != frame_number &&
+        (checked_frame = frame_number, std::remove(trigger) == 0)) {
         dump_until = frame_number + 240;
         std::printf("Camera dump: frames %llu-%llu\n", (unsigned long long)frame_number,
                     (unsigned long long)dump_until);
