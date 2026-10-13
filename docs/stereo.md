@@ -16,6 +16,33 @@ are live and saved to `gow3.ini`:
 
 Cost: about twice the GPU time of the scene (60 to about 52 FPS on an RX 7900 XTX at 1080p).
 
+## Leia SR 3D monitors (Samsung Odyssey 3D)
+Format **Leia SR 3D monitor** (`stereo_mode=leia`) weaves the full side-by-side frame
+(2 x 1920x1080) for the display's lenses, with eye tracking. It switches the lenses on while
+frames are woven.
+- **Bridge.** `gow3_leia.dll` (`gpu/leia_bridge`, MSVC) is the only code that uses the Leia SR
+  SDK. The port loads it at run time; the SR runtime DLLs come from the Leia SR platform
+  install. Build: `LEIASR_SDK_ROOT=<sdk with include/sr and lib> bash
+  packaging/windows/build_leia.sh` (the SDK's headers also need OpenCV's, by default in
+  `<sdk>/../opencv/build/include`).
+- **Interop.**
+  - The SR SDK has no Vulkan weaver, so the bridge runs the OpenGL weaver in a hidden
+    context of its own.
+  - The presenter copies both eyes into an exportable Vulkan image and submits, signalling
+    a shared semaphore.
+  - The bridge imports the images (`GL_EXT_memory_object_win32`), waits on the semaphore,
+    weaves into an exported output of the window's size and signals back
+    (`GL_EXT_semaphore_win32`).
+  - The presenter shows the output 1:1: FSR 1 and RCAS are off, and the frame is the
+    swapchain's size.
+- **Row order.** OpenGL counts rows from the bottom, so the shared images are upside down
+  for it. The weaver's lens pattern follows `gl_FragCoord`: it weaves an upright copy of the
+  input and its result is flipped back. Without this the slanted lens pattern is mirrored
+  and shows vertical lines. `GOW3_LEIA_FLIP` (tests): bit 0 flips the input, bit 1 the
+  output, default 3.
+- **Display settings.** Use the panel's native size: `output_res=3840x2160`, borderless or
+  fullscreen.
+
 ## How it works
 - **Eye offset in the vertex shaders** (`EmitStereo`, `emit_spirv_special.cpp`). Every vertex
   shader gets an epilogue `x += sep * w * max(1 - conv / d, -1)`. `sep` and `conv` are new push

@@ -77,7 +77,9 @@ struct Values {
     /// parallax at infinity in percent of the image width; convergence: the screen plane's
     /// distance in game units (zero parallax there).
     std::atomic<bool> stereo{false};
-    std::atomic<int> stereo_mode{0};
+    std::atomic<int> stereo_mode{0}; ///< 0 half, 1 full, 2 Leia SR monitor (woven)
+    /// Why the Leia SR output is unavailable (set by the renderer when it is selected), or null.
+    std::atomic<const char*> leia_problem{nullptr};
     std::atomic<float> stereo_separation{3.0f};
     std::atomic<float> stereo_convergence{20.0f};
     // Startup: run.py turns them into patches and environment variables; "Apply and restart".

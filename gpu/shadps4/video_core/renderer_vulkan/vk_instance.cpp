@@ -320,6 +320,11 @@ bool Instance::CreateDevice() {
                VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
     ASSERT_MSG(add_extension(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME),
                "Required Vulkan extension unavailable: {}", VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+#ifdef _WIN32
+    // gow3: memory and semaphores shared with OpenGL (the Leia SR weaver, vk_leia.h).
+    external_win32 = add_extension("VK_KHR_external_memory_win32") &&
+                     add_extension("VK_KHR_external_semaphore_win32");
+#endif
 
     const auto robustness2_features = feature_chain.get<vk::PhysicalDeviceRobustness2FeaturesEXT>();
     ASSERT_MSG(robustness2_features.robustBufferAccess2,

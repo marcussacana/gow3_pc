@@ -119,6 +119,13 @@ private:
     vk::ImageView ComposeSideBySide(vk::CommandBuffer cmdbuf, vk::Image left, vk::Image right,
                                     vk::Format image_format, vk::Format view_format,
                                     vk::Extent2D eye_size, bool full, vk::Extent2D& out_size);
+    /// gow3 stereo, Leia SR monitors (vk_leia.h): copies both eyes into the weaver's input,
+    /// submits, weaves into an output of the window's size. Returns the output's view (the next
+    /// submission waits in `leia_wait`), or null when the weaver is unavailable.
+    vk::ImageView WeaveLeia(vk::Image left, vk::Image right, vk::Extent2D eye_size,
+                            vk::Format view_format, vk::Extent2D& out_size);
+    vk::Semaphore leia_wait{};
+    bool leia_lens = false;
     VideoCore::UniqueImage sbs_image;
     vk::UniqueImageView sbs_view;
     vk::Format sbs_format{};

@@ -157,6 +157,11 @@ public:
         return shader_stencil_export;
     }
 
+    /// gow3: VK_KHR_external_memory_win32 and VK_KHR_external_semaphore_win32 are enabled.
+    bool IsExternalWin32Supported() const {
+        return external_win32;
+    }
+
     /// Returns true when VK_EXT_depth_clip_control is supported
     bool IsDepthClipControlSupported() const {
         return depth_clip_control;
@@ -557,6 +562,7 @@ private:
     bool list_restart{};
     bool provoking_vertex{};
     bool shader_stencil_export{};
+    bool external_win32{};
     bool image_load_store_lod{};
     bool amd_gcn_shader{};
     bool amd_shader_trinary_minmax{};

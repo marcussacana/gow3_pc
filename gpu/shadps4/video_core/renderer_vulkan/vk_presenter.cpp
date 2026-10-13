@@ -14,6 +14,7 @@
 #include "video_core/renderer_vulkan/vk_platform.h"
 #include "gow3_overlay.h"
 #include "gow3_settings.h"
+#include "video_core/renderer_vulkan/vk_leia.h"
 #include "gow3_graphics.h"
 #include "video_core/renderer_vulkan/vk_temporal_upscaler.h"
 #include "video_core/renderer_vulkan/vk_presenter.h"
@@ -448,6 +449,80 @@ vk::ImageView Presenter::ComposeSideBySide(vk::CommandBuffer cmdbuf, vk::Image l
     return *sbs_view;
 }
 
+vk::ImageView Presenter::WeaveLeia(vk::Image left, vk::Image right, vk::Extent2D eye_size,
+                                   vk::Format view_format, vk::Extent2D& out_size) {
+    LeiaWeaver* leia = LeiaWeaver::Get();
+    const vk::Extent2D input{eye_size.width * 2, eye_size.height};
+    const vk::Extent2D output = swapchain.GetExtent(); // the window: weaving is pixel exact
+    const bool bgra =
+        view_format == vk::Format::eB8G8R8A8Srgb || view_format == vk::Format::eB8G8R8A8Unorm;
+    const bool rgba8 = bgra || view_format == vk::Format::eR8G8B8A8Srgb ||
+                       view_format == vk::Format::eR8G8B8A8Unorm;
+    if (!leia || !rgba8 || output.width == 0 ||
+        !leia->Prepare(instance, input, output, view_format, bgra,
+                       window.GetWindowInfo().render_surface)) {
+        Gow3Settings::Get().leia_problem = LeiaWeaver::Problem();
+        return {};
+    }
+    Gow3Settings::Get().leia_problem = nullptr;
+    const u32 graphics = instance.GetGraphicsQueueFamilyIndex();
+    const auto barrier = [&](vk::Image image, vk::ImageLayout from, vk::ImageLayout to,
+                             u32 src_family, u32 dst_family) {
+        const vk::ImageMemoryBarrier2 b{
+            .srcStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .srcAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+            .dstStageMask = vk::PipelineStageFlagBits2::eAllCommands,
+            .dstAccessMask = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite,
+            .oldLayout = from,
+            .newLayout = to,
+            .srcQueueFamilyIndex = src_family,
+            .dstQueueFamilyIndex = dst_family,
+            .image = image,
+            .subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1},
+        };
+        draw_scheduler.CommandBuffer().pipelineBarrier2(
+            {.imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &b});
+    };
+    constexpr u32 ignored = VK_QUEUE_FAMILY_IGNORED;
+    constexpr u32 external = VK_QUEUE_FAMILY_EXTERNAL;
+    // Both eyes as they are stored (texels copied, not converted: the bridge reads the
+    // presenter's channel order).
+    barrier(leia->Input(), vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+            ignored, ignored);
+    for (const auto& [src, x] : {std::pair{left, 0u}, std::pair{right, eye_size.width}}) {
+        const vk::ImageCopy region{
+            .srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+            .dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1},
+            .dstOffset = {s32(x), 0, 0},
+            .extent = {eye_size.width, eye_size.height, 1},
+        };
+        draw_scheduler.CommandBuffer().copyImage(src, vk::ImageLayout::eTransferSrcOptimal,
+                                                 leia->Input(),
+                                                 vk::ImageLayout::eTransferDstOptimal, region);
+    }
+    // To OpenGL: the input to read, the output to draw (the previous frame's reads are done:
+    // the semaphore signal covers all earlier work on the queue).
+    barrier(leia->Input(), vk::ImageLayout::eTransferDstOptimal,
+            vk::ImageLayout::eShaderReadOnlyOptimal, graphics, external);
+    barrier(leia->Output(), vk::ImageLayout::eUndefined, vk::ImageLayout::eColorAttachmentOptimal,
+            graphics, external);
+    SubmitInfo info{};
+    info.AddSignal(leia->Ready());
+    draw_scheduler.Flush(info);
+    if (!leia->Weave()) {
+        return {};
+    }
+    if (!leia_lens) {
+        leia->SetLens(true);
+        leia_lens = true;
+    }
+    leia_wait = leia->Done();
+    barrier(leia->Output(), vk::ImageLayout::eColorAttachmentOptimal,
+            vk::ImageLayout::eShaderReadOnlyOptimal, external, graphics);
+    out_size = output;
+    return leia->OutputView();
+}
+
 Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& attribute,
                                VAddr cpu_address) {
     // gow3: GOW3_FRAME_DUMP_TRIGGER=<file>: when the file exists it is removed and this frame's
@@ -488,11 +563,12 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     };
 
     draw_scheduler.EndRendering();
-    const auto cmdbuf = draw_scheduler.CommandBuffer();
+    auto cmdbuf = draw_scheduler.CommandBuffer(); // (the Leia weave submits mid-frame)
     cmdbuf.pipelineBarrier2(vk::DependencyInfo{
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = &pre_barrier,
     });
+    bool woven = false;
 
     VideoCore::ImageViewInfo view_info{};
     view_info.format = GetFrameViewFormat(attribute.attrib.pixel_format);
@@ -545,10 +621,22 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
                             vk::PipelineStageFlagBits2::eTransfer,
                             vk::AccessFlagBits2::eTransferRead);
             runtime.FlushBarriers();
-            image_view = ComposeSideBySide(draw_scheduler.CommandBuffer(), image.GetImage(), right,
-                                           image.backing->image.image_ci.format,
-                                           view_info.format, image_size,
-                                           Gow3Settings::Get().stereo_mode == 1, image_size);
+            const int mode = Gow3Settings::Get().stereo_mode;
+            if (mode == 2) {
+                const auto woven_view = WeaveLeia(image.GetImage(), right, image_size,
+                                                  view_info.format, image_size);
+                if (woven_view) {
+                    image_view = woven_view;
+                    woven = true;
+                }
+                cmdbuf = draw_scheduler.CommandBuffer();
+            }
+            if (!woven) {
+                image_view = ComposeSideBySide(cmdbuf, image.GetImage(), right,
+                                               image.backing->image.image_ci.format,
+                                               view_info.format, image_size, mode == 1,
+                                               image_size);
+            }
         } else {
             runtime.Transit(&image, vk::ImageLayout::eShaderReadOnlyOptimal,
                             vk::PipelineStageFlagBits2::eFragmentShader,
@@ -562,6 +650,15 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     const auto& graphics = Gow3Settings::Get();
     fsr_settings.enable = graphics.fsr1;
     fsr_settings.use_rcas = graphics.rcas;
+    if (woven) {
+        // The woven image is pixel exact for the display's lenses: no scaling or sharpening.
+        fsr_settings.enable = false;
+        fsr_settings.use_rcas = false;
+    }
+    if (leia_lens && !woven) {
+        LeiaWeaver::Get()->SetLens(false);
+        leia_lens = false;
+    }
     fsr_settings.rcas_attenuation = Gow3Graphics::RcasAttenuation(graphics.rcas_strength);
     Gow3Settings::Get().image_width = int(image_size.width);
     Gow3Settings::Get().image_height = int(image_size.height);
@@ -595,6 +692,10 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     frame->ready_semaphore = draw_scheduler.GetWorkSemaphore()->Handle();
     frame->ready_tick = draw_scheduler.CurrentTick();
     SubmitInfo info{};
+    if (leia_wait) {
+        info.AddWait(leia_wait); // the weaver's output
+        leia_wait = nullptr;
+    }
     draw_scheduler.Flush(info);
 
     // gow3: the GPU command thread runs at most GOW3_FRAMES_AHEAD (default 1) guest frames

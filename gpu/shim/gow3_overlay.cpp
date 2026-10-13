@@ -405,10 +405,16 @@ void ImageTab() {
                  "Renders the scene once per eye, left and right halves of the image (3D TVs and "
                  "glasses). Costs about twice the GPU time of the 3D scene.");
         ImGui::BeginDisabled(!s.stereo);
-        static const char* const modes[] = {"Half (fits the window)", "Full (twice as wide)"};
-        ChoiceRow("Format", s.stereo_mode, modes, nullptr, 2,
+        static const char* const modes[] = {"Half (fits the window)", "Full (twice as wide)",
+                                            "Leia SR 3D monitor"};
+        ChoiceRow("Format", s.stereo_mode, modes, nullptr, 3,
                   "Half: each eye squeezed into half the width (most 3D TVs). Full: each eye at full "
-                  "size, for a display twice as wide.");
+                  "size, for a display twice as wide. Leia SR: woven for glasses-free 3D monitors "
+                  "(Samsung Odyssey 3D...) with eye tracking; needs gow3_leia.dll and fullscreen.");
+        if (s.stereo_mode == 2) {
+            const char* problem = s.leia_problem;
+            InfoRow("Leia SR", problem ? problem : "weaving");
+        }
         FloatSliderRow("Depth", s.stereo_separation, 0.0f, 10.0f, "%.1f%%",
                        "How far apart far away objects are between the eyes, in percent of the width.");
         FloatSliderRow("Screen distance", s.stereo_convergence, 1.0f, 200.0f, "%.0f",
@@ -417,11 +423,10 @@ void ImageTab() {
         Row("Defaults");
         if (ImGui::Button("Reset 3D defaults")) {
             const Gow3Settings::Values defaults;
-            Store(s.stereo_mode, defaults.stereo_mode.load(), true);
             Store(s.stereo_separation, defaults.stereo_separation.load(), true);
             Store(s.stereo_convergence, defaults.stereo_convergence.load(), true);
         }
-        Help("Format, depth and screen distance back to their defaults (half, 3%, 20).");
+        Help("Depth and screen distance back to their defaults (3%, 20).");
         ImGui::PopID();
         ImGui::EndDisabled();
         ImGui::EndTable();

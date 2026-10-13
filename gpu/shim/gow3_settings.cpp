@@ -108,7 +108,7 @@ void Set(Values& v, const std::string& key, const std::string& value) {
     } else if (key == "stereo") {
         v.stereo = i != 0;
     } else if (key == "stereo_mode") {
-        v.stereo_mode = value == "full" ? 1 : 0;
+        v.stereo_mode = value == "full" ? 1 : value == "leia" ? 2 : 0;
     } else if (key == "stereo_separation") {
         v.stereo_separation = Clamp(f, 0.0f, 10.0f);
     } else if (key == "stereo_convergence") {
@@ -318,7 +318,8 @@ void Save() {
                  v.engine_fps.load(), int(v.deferred_readback.load()), int(v.stale_readback.load()),
                  int(v.restart_unconfirmed.load()));
     std::fprintf(file, "stereo=%d\nstereo_mode=%s\nstereo_separation=%.2f\nstereo_convergence=%.1f\n",
-                 int(v.stereo.load()), v.stereo_mode ? "full" : "half",
+                 int(v.stereo.load()),
+                 v.stereo_mode == 2 ? "leia" : v.stereo_mode == 1 ? "full" : "half",
                  v.stereo_separation.load(), v.stereo_convergence.load());
     // Read by run.sh at start.
     std::fprintf(file, "live_resolution=%s\n", v.live_resolution < 0 ? "auto"
