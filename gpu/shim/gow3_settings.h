@@ -82,6 +82,8 @@ struct Values {
     std::atomic<const char*> leia_problem{nullptr};
     std::atomic<float> stereo_separation{3.0f};
     std::atomic<float> stereo_convergence{20.0f};
+    /// How far in front of the screen objects may come, in units of the separation.
+    std::atomic<float> stereo_popout{1.0f};
     // Startup: run.py turns them into patches and environment variables; "Apply and restart".
     std::atomic<int> render_resolution{0};
     std::atomic<int> engine_fps{120};

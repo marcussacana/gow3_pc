@@ -776,7 +776,7 @@ void EmitContext::DefinePushDataBlock() {
     // Create push constants block for instance steps rates
     const Id struct_type{Name(TypeStruct(F32[1], F32[1], F32[1], F32[1], U32[4], U32[4], U32[4],
                                          U32[4], U32[4], U32[4], U32[2], U32[1], U32[1],
-                                         F32[1], F32[1]),
+                                         F32[1], F32[1], F32[1]),
                               "AuxData")};
     Decorate(struct_type, spv::Decoration::Block);
     MemberName(struct_type, PushData::XOffsetIndex, "xoffset");
@@ -809,6 +809,8 @@ void EmitContext::DefinePushDataBlock() {
     MemberDecorate(struct_type, PushData::StereoSepIndex, spv::Decoration::Offset, 128U);
     MemberName(struct_type, PushData::StereoConvIndex, "stereo_conv");
     MemberDecorate(struct_type, PushData::StereoConvIndex, spv::Decoration::Offset, 132U);
+    MemberName(struct_type, PushData::StereoPopoutIndex, "stereo_popout");
+    MemberDecorate(struct_type, PushData::StereoPopoutIndex, spv::Decoration::Offset, 136U);
     push_data_block = DefineVar(struct_type, spv::StorageClass::PushConstant);
     Name(push_data_block, "push_data");
     interfaces.push_back(push_data_block);

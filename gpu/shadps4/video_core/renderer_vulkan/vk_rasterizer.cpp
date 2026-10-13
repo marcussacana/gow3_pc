@@ -1808,6 +1808,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
         push_data.stereo_sep = Stereo::EyeSeparation(Stereo::Eye(active_eye),
                                                      settings.stereo_separation);
         push_data.stereo_conv = settings.stereo_convergence;
+        push_data.stereo_popout = settings.stereo_popout;
     }
     if (!HelperEligible(pipeline)) {
         ++helper_serial;

@@ -220,6 +220,7 @@ struct PushData {
     static constexpr u32 SceneSizeIndex = MotionParamIndex + 1;
     static constexpr u32 StereoSepIndex = SceneSizeIndex + 1;
     static constexpr u32 StereoConvIndex = StereoSepIndex + 1;
+    static constexpr u32 StereoPopoutIndex = StereoConvIndex + 1;
 
     float xoffset;
     float yoffset;
@@ -232,14 +233,15 @@ struct PushData {
     /// gow3 stereo (docs/stereo.md): vertex clip x += sep * (w - conv); 0 is off.
     float stereo_sep;
     float stereo_conv;
+    float stereo_popout; ///< pop-out limit, in units of the separation
 
     void AddOffset(u32 binding, u32 offset) {
         ASSERT(offset < 256 && binding < buf_offsets.size());
         buf_offsets[binding] = offset;
     }
 };
-// gow3: 8 bytes past the 128 the Vulkan spec guarantees; desktop GPUs give 256 (checked in
+// gow3: 12 bytes past the 128 the Vulkan spec guarantees; desktop GPUs give 256 (checked in
 // Instance).
-static_assert(sizeof(PushData) <= 136, "PushData size is greater than Instance checks");
+static_assert(sizeof(PushData) <= 140, "PushData size is greater than Instance checks");
 
 } // namespace Shader

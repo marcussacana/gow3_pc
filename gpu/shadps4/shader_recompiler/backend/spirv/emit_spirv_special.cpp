@@ -202,6 +202,7 @@ static void EmitStereo(EmitContext& ctx) {
     };
     const Id sep{load(PushData::StereoSepIndex)};
     const Id conv{load(PushData::StereoConvIndex)};
+    const Id popout{load(PushData::StereoPopoutIndex)};
     const Id position{ctx.OpLoad(ctx.F32[4], ctx.output_position)};
     const Id x{ctx.OpCompositeExtract(type, position, 0u)};
     const Id z{ctx.OpCompositeExtract(type, position, 2u)};
@@ -212,10 +213,11 @@ static void EmitStereo(EmitContext& ctx) {
                                  ctx.OpFSub(type, z,
                                             ctx.OpFMul(type, ctx.Constant(type, StereoDepthA), w)),
                                  ctx.Constant(type, StereoDepthB))};
-    // Parallax in units of the separation, 1 - conv / d, limited to -1 in front of the screen
-    // (as much as at infinity): close-ups (the menu's Kratos, d ~ 2) would leave the image.
+    // Parallax in units of the separation, 1 - conv / d, limited to -popout in front of the
+    // screen (1: as much as at infinity): close-ups (the menu's Kratos, d ~ 2) would leave the
+    // image.
     const Id ratio{ctx.OpFSub(type, one, ctx.OpFDiv(type, ctx.OpFMul(type, conv, w_over_d), w))};
-    const Id limited{ctx.OpFMax(type, ratio, ctx.Constant(type, -1.f))};
+    const Id limited{ctx.OpFMax(type, ratio, ctx.OpFNegate(type, popout))};
     const Id parallax{ctx.OpFMul(type, w, limited)};
     const Id shift{ctx.OpSelect(type, ctx.OpFOrdEqual(ctx.U1[1], w, one), ctx.Constant(type, 0.f),
                                 ctx.OpFMul(type, sep, parallax))};

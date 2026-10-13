@@ -420,13 +420,18 @@ void ImageTab() {
         FloatSliderRow("Screen distance", s.stereo_convergence, 1.0f, 200.0f, "%.0f",
                        "Objects at this distance appear on the screen; nearer ones come out of it. 20 "
                        "puts Kratos about on the screen.");
+        FloatSliderRow("Pop-out limit", s.stereo_popout, 0.0f, 5.0f, "%.1fx",
+                       "How far near objects may come out of the screen, in units of the depth at "
+                       "infinity. 0 keeps everything behind the screen; high values can split very "
+                       "close objects into two images.");
         Row("Defaults");
         if (ImGui::Button("Reset 3D defaults")) {
             const Gow3Settings::Values defaults;
             Store(s.stereo_separation, defaults.stereo_separation.load(), true);
             Store(s.stereo_convergence, defaults.stereo_convergence.load(), true);
+            Store(s.stereo_popout, defaults.stereo_popout.load(), true);
         }
-        Help("Depth and screen distance back to their defaults (3%, 20).");
+        Help("Depth, screen distance and pop-out limit back to their defaults (3%, 20, 1x).");
         ImGui::PopID();
         ImGui::EndDisabled();
         ImGui::EndTable();

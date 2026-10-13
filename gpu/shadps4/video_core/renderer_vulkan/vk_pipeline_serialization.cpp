@@ -32,7 +32,7 @@
 
 namespace Serialization {
 /* You should increment versions below once corresponding serialization scheme is changed. */
-static constexpr u32 ShaderBinaryVersion = 10u; // gow3: stereo VS epilogue (pop-out limit)
+static constexpr u32 ShaderBinaryVersion = 11u; // gow3: stereo VS epilogue (pop-out setting)
 static constexpr u32 ShaderMetaVersion = 7u; // gow3: ImageResource::needs_native
 static constexpr u32 PipelineKeyVersion = 5u; // gow3: Info layout (ImageResource::needs_native)
 } // namespace Serialization
