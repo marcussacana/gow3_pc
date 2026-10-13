@@ -729,10 +729,12 @@ void Rasterizer::RetireSubmission() {
     if (!draw_pipe || !OnStageA()) {
         return;
     }
-    while (!pipe_keepalive.empty() && draw_pipe->Reached(pipe_keepalive.front().first)) {
+    // (A deferred stereo batch replays its packets' preparations for the right eye.)
+    while (!pipe_keepalive.empty() && draw_pipe->Reached(pipe_keepalive.front().first) &&
+           !draw_pipe->Deferred()) {
         pipe_keepalive.pop_front();
     }
-    if (!draw_pipe->Idle()) {
+    if (!draw_pipe->Idle() || draw_pipe->Deferred()) {
         pipe_keepalive.emplace_back(draw_pipe->Head(), draw_prep->KeepCurrent());
     }
 }
@@ -786,6 +788,9 @@ void Rasterizer::FlushEyeBatch() {
     if (batch.packets.empty()) {
         return;
     }
+    const u64 flush_start = __rdtsc();
+    stereo_stats[4].fetch_add(1, std::memory_order_relaxed);
+    stereo_stats[5].fetch_add(batch.packets.size(), std::memory_order_relaxed);
     // The registers after the batch, back to before its first packet.
     for (size_t i = batch.packets.size(); i-- > 0;) {
         UndoBlocks(batch.undo.data() + batch.undo_at[i]);
@@ -796,12 +801,13 @@ void Rasterizer::FlushEyeBatch() {
         const auto* data = reinterpret_cast<const u8*>(batch.data.data() + offset);
         const auto parsed = ApplyPacket(data, size, false, nullptr);
         eye_draw = true;
-        // (The draw preparation may be retired by now: the bindings are read again.)
+        // (RetireSubmission keeps the draw preparations alive while the batch is deferred.)
         if (parsed.indirect) {
             DrawIndirectRecord(static_cast<const GraphicsPipeline*>(parsed.packet->pipeline),
                                parsed.packet->is_indexed, *parsed.indirect);
         } else {
-            DrawRecord(static_cast<const GraphicsPipeline*>(parsed.packet->pipeline), nullptr,
+            DrawRecord(static_cast<const GraphicsPipeline*>(parsed.packet->pipeline),
+                       parsed.packet->prepared,
                        parsed.packet->is_indexed, parsed.packet->index_offset);
         }
         Shader::Info::num_ud_snapshots = 0;
@@ -818,6 +824,7 @@ void Rasterizer::FlushEyeBatch() {
     batch.packets.clear();
     batch.undo.clear();
     batch.undo_at.clear();
+    stereo_stats[2].fetch_add(__rdtsc() - flush_start, std::memory_order_relaxed);
     if (draw_pipe) {
         draw_pipe->SetDeferred(false);
     }
@@ -848,12 +855,15 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         // Is it an eye draw? A single-eye draw first lets the batch's right eye run.
         const auto* pipeline = static_cast<const GraphicsPipeline*>(packet.pipeline);
         self.active_eye = Stereo::Left;
+        u64 t0 = __rdtsc();
         self.PrepareRenderState(pipeline);
+        self.stereo_stats[0].fetch_add(__rdtsc() - t0, std::memory_order_relaxed);
         if (!self.eye_draw && !self.eye_batch.packets.empty()) {
             self.UndoBlocks(self.packet_undo.data());
             self.FlushEyeBatch();
             parsed = self.ApplyPacket(data, size, false, nullptr);
         }
+        t0 = __rdtsc();
         if (indirect) {
             self.DrawIndirectRecord(pipeline, packet.is_indexed, *indirect);
         } else {
@@ -861,6 +871,8 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         }
         Shader::Info::num_ud_snapshots = 0;
         self.num_ring_stages = 0;
+        self.stereo_stats[self.eye_draw ? 1 : 3].fetch_add(__rdtsc() - t0,
+                                                           std::memory_order_relaxed);
         if (self.eye_draw) {
             auto& batch = self.eye_batch;
             const u32 offset = u32(batch.data.size());
@@ -1071,6 +1083,16 @@ void Rasterizer::PrintPipeStats() {
         }
     }
     std::printf("\n");
+    if (Gow3Settings::Get().stereo.load(std::memory_order_relaxed)) {
+        std::array<u64, 6> s;
+        for (u32 i = 0; i < 6; ++i) {
+            s[i] = stereo_stats[i].exchange(0, std::memory_order_relaxed);
+        }
+        std::printf("  stereo, stage B: classify %.1f%%, left eye %.1f%%, right eye %.1f%%, "
+                    "one eye %.1f%%; %.0f batches/s of %.1f draws\n",
+                    100.0 * s[0] / cycles, 100.0 * s[1] / cycles, 100.0 * s[2] / cycles,
+                    100.0 * s[3] / cycles, s[4] / seconds, s[4] ? double(s[5]) / s[4] : 0.0);
+    }
     drain_sites.clear();
     draw_pipe->drains_by_reason = {};
     window = now;

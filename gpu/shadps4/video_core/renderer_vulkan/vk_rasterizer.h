@@ -362,6 +362,9 @@ private:
         std::vector<u32> undo_at;
         u64 ring_end = 0;
     } eye_batch;
+    /// gow3 stereo statistics (GOW3_FRAME_STATS), stage B cycles: classification, left eye,
+    /// right eye, single-eye draws; then batches and eye draws.
+    std::array<std::atomic<u64>, 6> stereo_stats{};
     std::vector<u32> packet_undo;
     /// Records a draw or dispatch (`record`) for the left eye and, when it is an eye draw, again
     /// for the right eye.

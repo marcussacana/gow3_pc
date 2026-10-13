@@ -157,6 +157,11 @@ public:
         return consumed.load(std::memory_order_acquire) >= position;
     }
 
+    /// Stage B holds deferred work (its packets' preparations must stay alive).
+    [[nodiscard]] bool Deferred() const noexcept {
+        return deferred.load(std::memory_order_acquire);
+    }
+
     [[nodiscard]] bool Idle() const noexcept {
         return consumed.load(std::memory_order_acquire) == head;
     }
