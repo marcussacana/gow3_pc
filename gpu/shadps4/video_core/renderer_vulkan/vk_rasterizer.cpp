@@ -2765,7 +2765,7 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
     const u32 count = static_cast<u32>(stage.images.size());
     if (!prepared || count == 0 || count > TextureSet::MaxImages ||
         Gow3Toggle::Disabled(Gow3Toggle::TextureSetMemo) || FrameCapture::Active() ||
-        eye_draw) { // the eyes bind different images under the same T#s
+        (eye_draw && active_eye == Stereo::Right)) { // the right eye binds twins
         return false;
     }
     for (const auto& image : stage.images) {
@@ -2849,9 +2849,9 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
 
 RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     // gow3: RenderStateMemo (see BeginMemo).
-    // (Not for eye draws: both eyes have the same signature but different attachments.)
+    // (Eye draws too, per eye: their signatures match but their attachments differ.)
     const bool memo_on = !Gow3Toggle::Disabled(Gow3Toggle::RenderStateMemo) &&
-                         !FrameCapture::Active() && !eye_draw;
+                         !FrameCapture::Active();
     if (Gow3Stats::enabled && ((begin_memo_hits + begin_memo_misses) & 0x3FFFF) == 0x3FFFF) {
         std::printf("Render state memo: %llu hits, %llu misses; texture sets: %llu hits, %llu "
                     "misses\n",
@@ -2873,7 +2873,8 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     if (memo_on) {
         signature = MakeBeginSignature(pipeline);
         const auto& regs = Regs();
-        bool usable = begin_memo.valid && scheduler.IsRenderingWith(begin_memo.state) &&
+        bool usable = begin_memo.valid && begin_memo.eye == u32(active_eye) &&
+                      scheduler.IsRenderingWith(begin_memo.state) &&
                       !regs.depth_render_control.depth_clear_enable &&
                       !regs.depth_render_control.stencil_clear_enable &&
                       signature == begin_memo.signature;
@@ -2904,7 +2905,7 @@ RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
         if (!clears) {
             // Recomputed after the full path: it may have started the scene (scene_started).
             begin_memo = {true, MakeBeginSignature(pipeline), state, push_data.scene_size,
-                          target_scale};
+                          target_scale, u32(active_eye)};
         }
     }
     return state;

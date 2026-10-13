@@ -198,6 +198,7 @@ private:
         RenderState state;
         u32 scene_size = 0;
         std::array<float, 2> target_scale{};
+        u32 eye = 0; ///< gow3 stereo: after the right eye, the left eye's rendering is the same
     } begin_memo;
     u64 begin_memo_hits = 0, begin_memo_misses = 0;
     void Resolve();
