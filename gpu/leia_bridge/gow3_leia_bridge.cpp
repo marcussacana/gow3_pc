@@ -95,13 +95,11 @@ GLuint g_semaphore[2] = {}; ///< ready, done
 // OpenGL counts rows from the bottom, Vulkan from the top: the shared images are upside down
 // for OpenGL. The weaver's lens pattern follows gl_FragCoord, so it weaves upright copies
 // (local textures) and the result is flipped back: rows match the panel's physical rows.
-// GOW3_LEIA_FLIP (tests): bit 0 flips the input, bit 1 the output (default 3).
 enum Local { FlippedInput, Woven };
 GLuint g_local[2] = {};
 GLuint g_framebuffer = 0;           ///< the shared output
 GLuint g_local_framebuffer[2] = {}; ///< the local textures
 GLuint g_input_framebuffer = 0;     ///< the shared input (blit source)
-int g_flip = 3;
 Gow3LeiaImage g_input{}, g_output{};
 
 bool CreateGlContext() {
@@ -226,9 +224,6 @@ int Attach(void* window, const Gow3LeiaImage* input, int input_bgra, const Gow3L
     if (!Import(0, *input) || !Import(1, *output)) {
         return 0;
     }
-    if (const char* flip = std::getenv("GOW3_LEIA_FLIP")) {
-        g_flip = std::atoi(flip) & 3;
-    }
     glGenTextures(2, g_local);
     const Gow3LeiaImage* sizes[2] = {input, output};
     for (int i = 0; i < 2; ++i) {
@@ -308,8 +303,8 @@ int Attach(void* window, const Gow3LeiaImage* input, int input_bgra, const Gow3L
     }
     g_weaver->setInputViewTexture(g_local[FlippedInput], int(input->width), int(input->height),
                                   GL_RGBA8_);
-    Log("Weaving %ux%u side by side into %ux%u (flip %d)", input->width, input->height,
-        output->width, output->height, g_flip);
+    Log("Weaving %ux%u side by side into %ux%u", input->width, input->height, output->width,
+        output->height);
     return 1;
 }
 
@@ -327,11 +322,11 @@ int Weave() {
         glBlitFramebuffer(0, 0, w, h, 0, flip ? h : 0, w, flip ? 0 : h, GL_COLOR_BUFFER_BIT,
                           GL_NEAREST);
     };
-    copy(g_input_framebuffer, g_local_framebuffer[FlippedInput], g_input, g_flip & 1);
+    copy(g_input_framebuffer, g_local_framebuffer[FlippedInput], g_input, true);
     glBindFramebuffer(GL_FRAMEBUFFER, g_local_framebuffer[Woven]);
     glViewport(0, 0, GLsizei(g_output.width), GLsizei(g_output.height));
     g_weaver->weave();
-    copy(g_local_framebuffer[Woven], g_framebuffer, g_output, g_flip & 2);
+    copy(g_local_framebuffer[Woven], g_framebuffer, g_output, true);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glSignalSemaphoreEXT(g_semaphore[1], 0, nullptr, 1, &g_texture[1], &write_layout);
     glFlush();

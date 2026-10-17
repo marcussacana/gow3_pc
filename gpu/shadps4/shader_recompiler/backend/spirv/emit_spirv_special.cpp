@@ -190,7 +190,7 @@ static void EmitFragmentMotion(EmitContext& ctx) {
 // with the view depth d taken from z/w (the game's projection: z = A * d + B), so positions
 // written scaled (k * clip, the effects' shaders) get the same parallax. Draws with w == 1
 // (full-screen passes, HUD, orthographic) keep zero parallax.
-// shortcut: A and B are the gameplay camera's (near 0.5); read them per scene if cutscenes differ.
+// A and B are the gameplay projection's (near plane 0.5).
 static constexpr float StereoDepthA = 1.00007f;
 static constexpr float StereoDepthB = -0.500018f;
 static void EmitStereo(EmitContext& ctx) {
@@ -215,8 +215,8 @@ static void EmitStereo(EmitContext& ctx) {
                                  ctx.Constant(type, StereoDepthB))};
     // Parallax in units of the separation, 1 - conv / d (NVIDIA 3D Vision's formula), softly
     // limited to -popout in front of the screen: linear down to the knee k = popout / 2, then
-    // -k - k e / (k + e) for the excess e, slope 1 at the knee and -popout as d -> 0. Close-ups
-    // (the menu's Kratos, d ~ 2) would leave the image; a hard limit flattened them into a plane.
+    // -k - k e / (k + e) for the excess e, slope 1 at the knee and -popout as d -> 0, so
+    // close-ups (the menu's Kratos, d ~ 2) stay in the image and keep their depth.
     const Id ratio{ctx.OpFSub(type, one, ctx.OpFDiv(type, ctx.OpFMul(type, conv, w_over_d), w))};
     const Id knee{ctx.OpFMul(type, popout, ctx.Constant(type, 0.5f))};
     const Id excess{ctx.OpFMax(type, ctx.OpFSub(type, ctx.OpFNegate(type, ratio), knee),

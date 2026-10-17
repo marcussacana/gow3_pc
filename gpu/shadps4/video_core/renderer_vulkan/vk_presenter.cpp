@@ -730,7 +730,7 @@ Frame* Presenter::PrepareFrame(const Libraries::VideoOut::BufferAttributeGroup& 
     };
 
     draw_scheduler.EndRendering();
-    auto cmdbuf = draw_scheduler.CommandBuffer(); // (the Leia weave submits mid-frame)
+    auto cmdbuf = draw_scheduler.CommandBuffer(); // not const: the Leia weave submits mid-frame
     cmdbuf.pipelineBarrier2(vk::DependencyInfo{
         .imageMemoryBarrierCount = 1,
         .pImageMemoryBarriers = &pre_barrier,

@@ -284,30 +284,6 @@ void Rasterizer::PrepareRenderState(const GraphicsPipeline* pipeline) {
             }
             check(db_desc.first);
             eye_draw = any && all;
-            // GOW3_STEREO_DEBUG=1: each kind of target that keeps a draw out of the eyes, once.
-            static const bool debug = std::getenv("GOW3_STEREO_DEBUG") != nullptr;
-            if (debug && any && !all) {
-                static std::unordered_set<std::string> seen;
-                const auto describe = [&](VideoCore::ImageId id) {
-                    if (!id) return std::string{};
-                    const auto& image = texture_cache.GetImage(id);
-                    const auto& i = image.info;
-                    return fmt::format("[{} {}x{} levels {} layers {} samples {} block {} "
-                                       "eligible {}] ",
-                                       vk::to_string(i.pixel_format), i.size.width, i.size.height,
-                                       i.resources.levels, i.resources.layers, i.num_samples,
-                                       u32(i.props.is_block), eye_targets->Eligible(image));
-                };
-                std::string why;
-                for (s32 cb = 0; cb < std::bit_width(key.mrt_mask); ++cb) {
-                    why += describe(cb_descs[cb].first);
-                }
-                why += "depth " + describe(db_desc.first);
-                if (seen.insert(why).second) {
-                    std::printf("Stereo: one eye only: %s\n", why.c_str());
-                    std::fflush(stdout);
-                }
-            }
         }
         if (eye_draw) {
             for (s32 cb = 0; cb < std::bit_width(key.mrt_mask); ++cb) {
@@ -731,7 +707,7 @@ void Rasterizer::RetireSubmission() {
     if (!draw_pipe || !OnStageA()) {
         return;
     }
-    // (A deferred stereo batch replays its packets' preparations for the right eye.)
+    // A deferred stereo batch still replays its packets' preparations for the right eye.
     while (!pipe_keepalive.empty() && draw_pipe->Reached(pipe_keepalive.front().first) &&
            !draw_pipe->Deferred()) {
         pipe_keepalive.pop_front();
@@ -790,9 +766,6 @@ void Rasterizer::FlushEyeBatch() {
     if (batch.packets.empty()) {
         return;
     }
-    const u64 flush_start = __rdtsc();
-    stereo_stats[4].fetch_add(1, std::memory_order_relaxed);
-    stereo_stats[5].fetch_add(batch.packets.size(), std::memory_order_relaxed);
     // The registers after the batch, back to before its first packet.
     for (size_t i = batch.packets.size(); i-- > 0;) {
         UndoBlocks(batch.undo.data() + batch.undo_at[i]);
@@ -801,9 +774,8 @@ void Rasterizer::FlushEyeBatch() {
     eye_targets->duplicating = true;
     for (const auto& [offset, size] : batch.packets) {
         const auto* data = reinterpret_cast<const u8*>(batch.data.data() + offset);
-        const auto parsed = ApplyPacket(data, size, false, nullptr);
+        const auto parsed = ApplyPacket(data, size, nullptr);
         eye_draw = true;
-        // (RetireSubmission keeps the draw preparations alive while the batch is deferred.)
         if (parsed.indirect) {
             DrawIndirectRecord(static_cast<const GraphicsPipeline*>(parsed.packet->pipeline),
                                parsed.packet->is_indexed, *parsed.indirect);
@@ -826,7 +798,6 @@ void Rasterizer::FlushEyeBatch() {
     batch.packets.clear();
     batch.undo.clear();
     batch.undo_at.clear();
-    stereo_stats[2].fetch_add(__rdtsc() - flush_start, std::memory_order_relaxed);
     if (draw_pipe) {
         draw_pipe->SetDeferred(false);
     }
@@ -849,7 +820,7 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         self.FlushEyeBatch();
     }
     self.packet_undo.clear();
-    auto parsed = self.ApplyPacket(data, size, true, batching ? &self.packet_undo : nullptr);
+    auto parsed = self.ApplyPacket(data, size, batching ? &self.packet_undo : nullptr);
     const auto& packet = *parsed.packet;
     const auto* cs = parsed.cs;
     const auto* indirect = parsed.indirect;
@@ -857,15 +828,12 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         // Is it an eye draw? A single-eye draw first lets the batch's right eye run.
         const auto* pipeline = static_cast<const GraphicsPipeline*>(packet.pipeline);
         self.active_eye = Stereo::Left;
-        u64 t0 = __rdtsc();
         self.PrepareRenderState(pipeline);
-        self.stereo_stats[0].fetch_add(__rdtsc() - t0, std::memory_order_relaxed);
         if (!self.eye_draw && !self.eye_batch.packets.empty()) {
             self.UndoBlocks(self.packet_undo.data());
             self.FlushEyeBatch();
-            parsed = self.ApplyPacket(data, size, false, nullptr);
+            parsed = self.ApplyPacket(data, size, nullptr);
         }
-        t0 = __rdtsc();
         if (indirect) {
             self.DrawIndirectRecord(pipeline, packet.is_indexed, *indirect);
         } else {
@@ -873,8 +841,6 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
         }
         Shader::Info::num_ud_snapshots = 0;
         self.num_ring_stages = 0;
-        self.stereo_stats[self.eye_draw ? 1 : 3].fetch_add(__rdtsc() - t0,
-                                                           std::memory_order_relaxed);
         if (self.eye_draw) {
             auto& batch = self.eye_batch;
             const u32 offset = u32(batch.data.size());
@@ -926,10 +892,9 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     }
 }
 
-Rasterizer::ParsedPacket Rasterizer::ApplyPacket(const u8* data, u32 size, bool verify,
+Rasterizer::ParsedPacket Rasterizer::ApplyPacket(const u8* data, u32 size,
                                                  std::vector<u32>* undo) {
     auto& self = *this;
-    (void)verify; // the verification (GOW3 draw pipe checks) only prints
     const auto& packet = *reinterpret_cast<const DrawPacket*>(data);
     const u8* in = data + sizeof(DrawPacket);
     const auto* blocks = reinterpret_cast<const u16*>(in);
@@ -1085,16 +1050,6 @@ void Rasterizer::PrintPipeStats() {
         }
     }
     std::printf("\n");
-    if (Gow3Settings::Get().stereo.load(std::memory_order_relaxed)) {
-        std::array<u64, 6> s;
-        for (u32 i = 0; i < 6; ++i) {
-            s[i] = stereo_stats[i].exchange(0, std::memory_order_relaxed);
-        }
-        std::printf("  stereo, stage B: classify %.1f%%, left eye %.1f%%, right eye %.1f%%, "
-                    "one eye %.1f%%; %.0f batches/s of %.1f draws\n",
-                    100.0 * s[0] / cycles, 100.0 * s[1] / cycles, 100.0 * s[2] / cycles,
-                    100.0 * s[3] / cycles, s[4] / seconds, s[4] ? double(s[5]) / s[4] : 0.0);
-    }
     drain_sites.clear();
     draw_pipe->drains_by_reason = {};
     window = now;
@@ -1737,7 +1692,7 @@ bool Rasterizer::BindHelperWanted() {
 }
 
 bool Rasterizer::HelperEligible(const Pipeline* pipeline) const {
-    // (Eye draws bind twins, which only this thread may touch.)
+    // Eye draws bind twins, which only this thread may touch.
     if (pipeline->IsCompute() || !bind_helper.Available() || FrameCapture::Active() || eye_draw ||
         Gow3Toggle::Disabled(Gow3Toggle::TextureBindHelper) ||
         Gow3Toggle::Disabled(Gow3Toggle::TextureBindingMemo) ||
@@ -2349,8 +2304,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                                      constant_ring->Data(ring->offset), ring->size);
             }
             if (!desc.IsSpecial()) {
-                camera_motion->DumpConstants(ring->address, constant_ring->Data(ring->offset),
-                                             ring->size, gbuffer_draw);
                 if (ring->size == 864 && gbuffer_draw &&
                     memory->IsValidGpuMapping(ring->address, 0)) {
                     camera_motion->OnConstants(reinterpret_cast<const float*>(ring->address));
@@ -2359,14 +2312,11 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
             }
             // gow3 stereo: the shadow mask rebuilds positions with this eye's camera.
             bool patched = false;
-            const int mask_debug = Gow3Settings::Get().stereo_mask_debug;
             if (eye_draw && stage.pgm_hash == Stereo::ShadowMaskShader && ring->size == 96 &&
-                buffer_index == 0 && mask_debug != 2) {
+                buffer_index == 0) {
                 std::array<float, 24> mask;
                 std::memcpy(mask.data(), constant_ring->Data(ring->offset), sizeof(mask));
-                if (Stereo::PatchShadowMask(mask.data(),
-                                            mask_debug == 1 ? -push_data.stereo_sep
-                                                            : push_data.stereo_sep,
+                if (Stereo::PatchShadowMask(mask.data(), push_data.stereo_sep,
                                             push_data.stereo_conv)) {
                     auto& stream = buffer_cache.GetStreamBuffer();
                     buffer_infos.emplace_back(stream.Handle(),
@@ -2432,11 +2382,6 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
         } else {
             const auto vsharp =
                 prepared ? prepared->buffer_sharps[buffer_index] : desc.GetSharp(stage);
-            if (vsharp.base_address && memory->IsValidGpuMapping(vsharp.base_address, 0)) {
-                camera_motion->DumpConstants(
-                    vsharp.base_address, reinterpret_cast<const void*>(vsharp.base_address),
-                    memory->ClampRangeSize(vsharp.base_address, vsharp.GetSize()), gbuffer_draw);
-            }
             if (vsharp.GetSize() == 864 && gbuffer_draw &&
                 memory->IsValidGpuMapping(vsharp.base_address, 0)) {
                 camera_motion->OnConstants(reinterpret_cast<const float*>(vsharp.base_address));
@@ -2966,7 +2911,7 @@ bool Rasterizer::BindTexturesFromSet(const Shader::Info& stage, const PreparedSt
 
 RenderState Rasterizer::BeginRendering(const GraphicsPipeline* pipeline) {
     // gow3: RenderStateMemo (see BeginMemo).
-    // (Eye draws too, per eye: their signatures match but their attachments differ.)
+    // Eye draws too: the memo keeps the eye, both eyes have the same signature.
     const bool memo_on = !Gow3Toggle::Disabled(Gow3Toggle::RenderStateMemo) &&
                          !FrameCapture::Active();
     if (Gow3Stats::enabled && ((begin_memo_hits + begin_memo_misses) & 0x3FFFF) == 0x3FFFF) {

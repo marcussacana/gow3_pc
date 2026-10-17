@@ -1,7 +1,8 @@
-# Stereo 3D side by side
+# Stereo 3D
 
-The scene is rendered twice per frame, once per eye, and shown with the two eyes side by side.
-Use it with 3D TVs, projectors and SBS viewers.
+The scene is rendered twice per frame, once per eye, and shown side by side or woven for a Leia SR
+3D monitor. Use it with 3D TVs, projectors, SBS viewers and glasses-free 3D monitors such as the
+Samsung Odyssey 3D.
 
 ## Use
 In-game menu (Insert or R3+L2), tab **Image**, section **Stereo 3D (side by side)**. All options
@@ -10,115 +11,61 @@ are live and saved to `gow3.ini`:
 | Key | Values | Default | Meaning |
 |---|---|---|---|
 | `stereo` | 0 / 1 | 0 | on/off |
-| `stereo_mode` | `half` / `full` | half | half: each eye squeezed into half the width; full: an image twice as wide |
-| `stereo_separation` | 0-10 | 3.0 | parallax at infinity, in percent of the image width |
-| `stereo_convergence` | 1-1000 | 20 | distance of the screen plane in game units (20 is about Kratos in gameplay) |
+| `stereo_mode` | `half` / `full` / `leia` | half | half: each eye squeezed into half the width; full: an image twice as wide; leia: woven for a Leia SR monitor |
+| `stereo_separation` | 0-10 | 3.0 | Depth: parallax at infinity, in percent of the image width |
+| `stereo_convergence` | 1-1000 | 20 | Screen distance: objects this far away sit on the screen (20 is about Kratos in gameplay) |
+| `stereo_popout` | 0-5 | 2.0 | Pop-out limit: how far near objects may come out of the screen, in units of the depth at infinity |
 
-Cost: about twice the GPU time of the scene (60 to about 52 FPS on an RX 7900 XTX at 1080p).
+The menu warns about uncomfortable combinations and says which setting to change. The ranges follow
+NVIDIA's 3D Vision guidelines (SIGGRAPH 2009): keep the scene between a third of the screen distance
+and 100 times it.
 
-## Leia SR 3D monitors (Samsung Odyssey 3D)
-Format **Leia SR 3D monitor** (`stereo_mode=leia`) weaves the full side-by-side frame
-(2 x 1920x1080) for the display's lenses, with eye tracking. It switches the lenses on while
-frames are woven.
-- **Bridge.** `gow3_leia.dll` (`gpu/leia_bridge`, MSVC) is the only code that uses the Leia SR
-  SDK. The port loads it at run time; the SR runtime DLLs come from the Leia SR platform
-  install. Build: `LEIASR_SDK_ROOT=<sdk with include/sr and lib> bash
-  packaging/windows/build_leia.sh` (the SDK's headers also need OpenCV's, by default in
-  `<sdk>/../opencv/build/include`).
-- **Interop.**
-  - The SR SDK has no Vulkan weaver, so the bridge runs the OpenGL weaver in a hidden
-    context of its own.
-  - The presenter copies both eyes into an exportable Vulkan image and submits, signalling
-    a shared semaphore.
-  - The bridge imports the images (`GL_EXT_memory_object_win32`), waits on the semaphore,
-    weaves into an exported output of the window's size and signals back
-    (`GL_EXT_semaphore_win32`).
-  - The presenter shows the output 1:1: FSR 1 and RCAS are off, and the frame is the
-    swapchain's size.
-- **Row order.** OpenGL counts rows from the bottom, so the shared images are upside down
-  for it. The weaver's lens pattern follows `gl_FragCoord`: it weaves an upright copy of the
-  input and its result is flipped back. Without this the slanted lens pattern is mirrored
-  and shows vertical lines. `GOW3_LEIA_FLIP` (tests): bit 0 flips the input, bit 1 the
-  output, default 3.
-- **Display settings.** Use the panel's native size: `output_res=3840x2160`, borderless or
-  fullscreen.
+Cost: about twice the GPU time of the scene; 60 FPS on an RX 7900 XTX at 1080p per eye.
+
+## Leia SR 3D monitors
+Format **Leia SR 3D monitor** (`stereo_mode=leia`) weaves the side-by-side frame (2 x 1920x1080)
+for the display's lenses, with eye tracking, and switches the lenses on while frames are woven.
+- Install the Leia SR platform (its runtime DLLs). `gow3_leia.dll` goes next to `gow3-probe.exe`.
+- Use the panel's native size: `output_res=3840x2160`, borderless or fullscreen.
+- Build the bridge (MSVC, needs the Leia SR SDK, which is not part of this repository):
+  `LEIASR_SDK_ROOT=<sdk with include/sr and lib> bash packaging/windows/build_leia.sh`. The SDK's
+  headers also need OpenCV's, by default in `<sdk>/../opencv/build/include`.
+
+The SR SDK has no Vulkan weaver, so `gow3_leia.dll` (`gpu/leia_bridge`) runs its OpenGL weaver in a
+hidden context. The presenter copies both eyes into an exportable Vulkan image and signals a shared
+semaphore; the bridge imports the images (`GL_EXT_memory_object_win32`), weaves into an output of
+the window's size and signals back (`GL_EXT_semaphore_win32`). The output is shown 1:1, without
+FSR 1 or RCAS. OpenGL counts rows from the bottom, so the bridge weaves an upright copy of the input
+and flips the result back; the lens pattern follows the panel's rows.
 
 ## How it works
 - **Eye offset in the vertex shaders** (`EmitStereo`, `emit_spirv_special.cpp`). Every vertex
-  shader gets an epilogue `x += sep * w * max(1 - conv / d, -1)`. `sep` and `conv` are new push
-  constants (`Shader::PushData::stereo_sep/stereo_conv`; the block grew from 128 to 136 bytes,
-  and `Instance` checks the device limit).
-  - The view depth `d` comes from z/w with the game's projection (`z = 1.00007 d - 0.5`). So
-    shaders that write a scaled clip position still get the right parallax.
-  - Draws with `w == 1` (full-screen passes, HUD, orthographic) keep zero parallax.
-  - Pop-out is limited to the separation at infinity. Close-ups such as the menu's Kratos
-    (d about 2) would otherwise leave the image.
-  - This replaces any search for the camera: the game has no camera buffer. Each object gets
-    its own World x View x Proj, computed on the CPU (see Research).
-- **Draws recorded twice** (`Rasterizer::RecordEyes`).
-  - `PrepareRenderState` classifies a draw as an eye draw when all its targets are screen-sized
-    (`Stereo::EyeSized`: 1920x1080 or 3840x2160 halved down to 1/16, MSAA included).
-  - An eye draw records first for the left eye, into the guest's images, then for the right
-    eye, into twins (`EyeTargets`, `vk_stereo.cpp`).
-  - In the right eye's pass, attachments and sampled textures that have a twin use the twin.
-  - Shadow maps (2048x2048), the 1x1 exposure and the 512x256 target are drawn once and
-    shared by both eyes.
-  - Eye draws skip the render-state and texture-set memos and the texture bind helper thread.
-- **Twin coherence.**
-  - Twins never go back to guest memory.
-  - A guest-image write that does not come from an eye draw (`Runtime::Transit` with write
-    access) marks the twin stale. Clears, copies and the single-eye MLAA compute are such writes.
-  - A stale twin is refilled from the guest image before the next eye draw writes it
-    (`EyeTargets::Prepare`).
-  - The guest's MSAA resolve (`Rasterizer::Resolve`) is repeated between the twins.
-- **Presentation** (`Presenter::ComposeSideBySide`).
-  - The display buffer and its twin are blitted side by side into one image, in the guest's
-    storage format and read through the same view format, so BGRA buffers keep their colors.
-  - FSR 1, RCAS and post-processing run on that image as before.
-- **HUD, menus, videos.** They are drawn with w == 1, so both eyes get the same image and they
-  sit on the screen plane.
+  shader gets an epilogue `x += sep * w * P`, with `P = 1 - conv / d`, the parallax of NVIDIA 3D
+  Vision. The view depth `d` comes from z/w with the game's projection (`z = 1.00007 d - 0.5`), so
+  shaders that write a scaled clip position get the same parallax. In front of the screen `P` is
+  compressed smoothly towards `-popout`, so close-ups stay inside the image and keep their depth.
+  Draws with `w == 1` (full-screen passes, HUD, orthographic) keep zero parallax. The game has no
+  camera buffer to change: each object gets its own World x View x Proj from the CPU.
+- **Draws recorded twice.** A draw whose targets are all screen-sized (1920x1080 or 3840x2160,
+  halved down to 1/16, MSAA included) is an eye draw. The left eye records into the game's images,
+  the right eye into twins (`EyeTargets`, `vk_stereo.cpp`) and samples the twins. Shadow maps, the
+  1x1 exposure and other small targets are drawn once and shared.
+- **Batches.** Consecutive eye draws are recorded for the left eye, then again for the right eye at
+  the first single-eye draw, dispatch or task, so render passes change once per batch.
+- **Twin coherence.** Twins never go back to guest memory. Any other write to the game's image
+  (clears, copies, the MLAA compute) marks the twin stale, and it is refilled from the game's image
+  before the next eye draw writes it. The game's MSAA resolve is repeated between the twins.
+- **Shadows.** The screen-space shadow mask rebuilds positions with the center camera. Its
+  constants are patched per eye (`Stereo::PatchShadowMask`).
+- **Presentation** (`Presenter::ComposeSideBySide`, `WeaveLeia`). The display image and its twin
+  are copied side by side in the game's storage format, so BGRA buffers keep their colors.
+- **HUD, menus, videos** are drawn with `w == 1`: both eyes get the same image, on the screen plane.
 
-## Known limits and work left
-- **Screen-space shadow mask** (`3af97853811d0c07`, see Research) runs per eye but with the
-  center camera's matrix. The right eye's shadows may be slightly off. The fix is a
-  matrix-only patch per eye, derived below.
-- **A bright spot seen only in the right eye** (a far doorway in the first level): cause not
-  found yet.
-- **MLAA** (compute `ccdebd80f02a77aa`) runs once. The right eye reuses the left eye's edges.
-- **Performance:** both eyes alternate render passes draw by draw, and memos are off for eye
-  draws.
-- **Projection constants** (1.00007, -0.5) come from gameplay. Other scenes (cutscenes) may use
-  another near plane.
-- **Not tested:** `full` mode on a double-width display, the temporal upscalers (stereo
-  expects `upscaler=none`, which `run.py` forces for this game) and the 4K render patch.
-
-## Research tools (environment variables, off by default)
-- `GOW3_STEREO_DEBUG=1`: prints each kind of target that keeps a draw to a single eye.
-- `GOW3_CAMERA_DUMP=<path>`: once the file `<path>` exists, every constant buffer of 256-4096
-  bytes bound in the next 240 frames goes to `<path>.bin`. Each record is frame, address,
-  G-buffer flag and size (u64 each), then the data.
-- `GOW3_CAPTURE_SEGMENTS=N`: the frame capture (F11 with `GOW3_FRAME_CAPTURE_KEY=1`) records
-  across N display-buffer boundaries. The game draws into a display buffer several times per
-  frame, so one segment misses the scene.
-
-## Research (CUSA01623 01.02, first level)
-- `CameraMotion::OnConstants` expects an 864-byte camera signature (far 3000). It never appears
-  in gameplay.
-- Each object has a 736-byte (or 224-byte) buffer: the world matrix, then World x View x Proj.
-  The convention is row vectors, D3D-style depth.
-- **Frame:**
-  1. depth pre-pass, 2x MSAA, 1920x1080;
-  2. 960x540 pass;
-  3. linear depth to R32F (`782d705b`);
-  4. about 10 shadow cascades: a 2048² shadow map, then a screen-space mask (`3af97853`);
-  5. forward pass, 2x MSAA, followed by its resolve;
-  6. fog (`475a4146`, screen UV and depth only);
-  7. transparents;
-  8. MLAA compute;
-  9. DOF, bloom pyramid, 1x1 exposure, final composite into the display buffer.
-- **Shadow mask `3af97853811d0c07`**, constants c[0..23]:
-  - Inputs: `d` is the linear depth; `v = (d*ndc.x, d*ndc.y, z', w')` with `z' = -c20*d + c22`
-    and `w' = -c21*d + c23`.
-  - Output: shadow-map xyz = `v.x*c[0..2] + v.y*c[4..6] + z'*c[8..10] + w'*c[12..14]`.
-  - For the right eye, `d*ndc_C.x = d*ndc_R.x - sep*d + sep*conv`. That is affine in `d`, so it
-    folds into c[8..14] as a multiple of c[0..2].
+## Limits
+- MLAA runs once; the right eye reuses the left eye's edges.
+- Shadows of objects inside the pop-out compression (nearer than `conv / (1 + popout / 2)`) are
+  approximate.
+- The projection constants (1.00007, -0.5) are the gameplay camera's; scenes with another near plane
+  get slightly different depth.
+- Not tested: `full` mode on a double-width display, the temporal upscalers (stereo expects
+  `upscaler=none`) and the 4K render patch.

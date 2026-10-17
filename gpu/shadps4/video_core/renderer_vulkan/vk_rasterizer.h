@@ -198,7 +198,7 @@ private:
         RenderState state;
         u32 scene_size = 0;
         std::array<float, 2> target_scale{};
-        u32 eye = 0; ///< gow3 stereo: after the right eye, the left eye's rendering is the same
+        u32 eye = 0; ///< gow3 stereo: the eye whose attachments `state` holds
     } begin_memo;
     u64 begin_memo_hits = 0, begin_memo_misses = 0;
     void Resolve();
@@ -246,7 +246,7 @@ private:
     struct ParsedPacket;
     /// Applies a packet's registers (their old values appended to `undo` when given), stage
     /// tables and extents (RunDrawPacket; FlushEyeBatch replays copies).
-    ParsedPacket ApplyPacket(const u8* data, u32 size, bool verify, std::vector<u32>* undo);
+    ParsedPacket ApplyPacket(const u8* data, u32 size, std::vector<u32>* undo);
     void UndoBlocks(const u32* undo);
     /// gow3 stereo: records the right eye of the batched draws (see eye_batch).
     void FlushEyeBatch();
@@ -364,9 +364,6 @@ private:
         std::vector<u32> undo_at;
         u64 ring_end = 0;
     } eye_batch;
-    /// gow3 stereo statistics (GOW3_FRAME_STATS), stage B cycles: classification, left eye,
-    /// right eye, single-eye draws; then batches and eye draws.
-    std::array<std::atomic<u64>, 6> stereo_stats{};
     std::vector<u32> packet_undo;
     /// Records a draw or dispatch (`record`) for the left eye and, when it is an eye draw, again
     /// for the right eye.

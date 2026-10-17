@@ -222,7 +222,7 @@ private:
                     if (!(spins & 255) && std::chrono::steady_clock::now() >= spin_until) {
                         const u32 seen = wake.load(std::memory_order_seq_cst);
                         sleeping.store(true, std::memory_order_seq_cst);
-                        // (Drain() sets flush_request before it bumps `wake`.)
+                        // Drain() sets flush_request before it bumps `wake`.
                         if (published.load(std::memory_order_seq_cst) == at &&
                             !flush_request.load(std::memory_order_seq_cst) &&
                             !stop.stop_requested()) {

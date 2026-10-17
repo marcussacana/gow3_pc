@@ -1194,14 +1194,6 @@ bool HandleEvent(const SDL_Event& event) {
             }
             return true;
         }
-        if (down && !event.key.repeat && capture_key && event.key.key == SDLK_F10) {
-            auto& mode = Gow3Settings::Get().stereo_mask_debug;
-            mode = (mode + 1) % 3;
-            std::printf("Stereo: shadow mask patch %s\n",
-                        mode == 0 ? "on" : mode == 1 ? "inverted" : "off");
-            std::fflush(stdout);
-            return true;
-        }
         if (down && !event.key.repeat && capture_key && event.key.key == SDLK_F11) {
             Vulkan::FrameCapture::Request();
             return true;

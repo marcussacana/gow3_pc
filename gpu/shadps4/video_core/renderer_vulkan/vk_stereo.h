@@ -55,13 +55,13 @@ static_assert(!EyeSized(2048, 2048) && !EyeSized(1, 1) && !EyeSized(64, 32) &&
               !EyeSized(512, 256) && !EyeSized(8, 9));
 static_assert(EyeSeparation(Right, 3.f) == 0.03f && EyeSeparation(Left, 3.f) == -0.03f);
 
-/// The screen-space shadow mask (docs/stereo.md, Research) rebuilds positions with the center
-/// camera from its 24 constants: v = (d * ndc.x, d * ndc.y, z', w'), z' = -c20 d + c22,
+/// The screen-space shadow mask (pixel shader below) rebuilds positions with the center camera
+/// from its 24 constants: v = (d * ndc.x, d * ndc.y, z', w'), z' = -c20 d + c22,
 /// w' = -c21 d + c23, shadow = v.x c[0..3] + v.y c[4..7] + z' c[8..11] + w' c[12..15].
 /// An eye sees d * ndc_center.x = d * ndc.x - sep d + sep conv (EmitStereo), affine in d: it
 /// folds into the z' and w' rows. False if z' and w' do not span d (left as they are).
-/// shortcut: ignores the pop-out limit (pixels nearer than conv / (1 + popout / 2)), fine for
-/// floors.
+/// Pixels inside the pop-out compression (nearer than conv / (1 + popout / 2)) keep an
+/// approximate shadow.
 constexpr u64 ShadowMaskShader = 0x3af97853811d0c07ull;
 constexpr bool PatchShadowMask(float* c, float sep, float conv) {
     const float a = -sep, b = sep * conv; // solve alpha z' + beta w' = a d + b
@@ -91,7 +91,7 @@ constexpr bool ShadowMaskSelfCheck() {
     const float unpatched = shadow_x(d, eye_ndc);
     PatchShadowMask(c, sep, conv);
     const float error = shadow_x(d, eye_ndc) - center, before = unpatched - center;
-    return error * error < 0.25f && before * before > 1.f; // (cancellation of ~2e5 terms)
+    return error * error < 0.25f && before * before > 1.f;
 }
 static_assert(ShadowMaskSelfCheck());
 } // namespace Stereo

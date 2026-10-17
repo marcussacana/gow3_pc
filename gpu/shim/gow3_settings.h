@@ -84,9 +84,6 @@ struct Values {
     std::atomic<float> stereo_convergence{20.0f};
     /// How far in front of the screen objects may come, in units of the separation.
     std::atomic<float> stereo_popout{2.0f};
-    /// Tests (F10 with GOW3_FRAME_CAPTURE_KEY=1, not saved): shadow mask patch 0 on, 1 sign
-    /// inverted, 2 off.
-    std::atomic<int> stereo_mask_debug{0};
     /// Controller vibration strength in percent; 0 turns it off (runtime_pad.c). Live.
     std::atomic<int> vibration{100};
     // Startup: run.py turns them into patches and environment variables; "Apply and restart".
