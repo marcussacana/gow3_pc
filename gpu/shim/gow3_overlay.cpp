@@ -203,6 +203,38 @@ static const char* PadText(const char* playstation, const char* xbox, const char
 // The note for the item under the mouse or the gamepad/keyboard focus, shown in the footer.
 const char* footer_help = nullptr;
 
+// Stereo 3D settings outside a comfortable range (NVIDIA 3D Vision, SIGGRAPH 2009: keep the
+// scene within [screen distance / 3, 100 x screen distance]; Kratos is at about 20 in gameplay).
+// The warnings for these values (separation in percent of the width), each with what to change.
+constexpr int StereoWarnings(float sep, float conv, float popout, const char* out[4]) {
+    int n = 0;
+    if (sep > 6.f) {
+        out[n++] = "Depth above 6%: on large screens far objects make the eyes turn outwards. "
+                   "Reduce Depth.";
+    }
+    if (sep * popout > 10.f) {
+        out[n++] = "Near objects can come out by more than 10% of the width and split into two "
+                   "images. Reduce Pop-out limit or Depth.";
+    }
+    if (conv > 60.f) {
+        out[n++] = "Screen distance over 3x Kratos's distance (20): most of the scene comes out of "
+                   "the screen and is cut at its edges. Reduce Screen distance.";
+    } else if (conv < 10.f) {
+        out[n++] = "Screen distance very short: nearly everything stays behind the screen. "
+                   "Increase Screen distance for pop-out.";
+    }
+    if (popout < 0.5f && conv > 20.f) {
+        out[n++] = "Pop-out limit low: what is in front of the screen is squeezed flat. Increase "
+                   "Pop-out limit.";
+    }
+    return n;
+}
+static_assert([] {
+    const char* w[4]{};
+    return StereoWarnings(3.f, 20.f, 2.f, w) == 0 && StereoWarnings(8.f, 80.f, 5.f, w) == 3 &&
+           StereoWarnings(3.f, 5.f, 2.f, w) == 1 && StereoWarnings(3.f, 30.f, 0.f, w) == 1;
+}());
+
 void Help(const char* text) {
     if (text && (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) || ImGui::IsItemFocused())) {
         footer_help = text;
@@ -444,8 +476,8 @@ void ImageTab() {
                        "puts Kratos about on the screen.");
         FloatSliderRow("Pop-out limit", s.stereo_popout, 0.0f, 5.0f, "%.1fx",
                        "How far near objects may come out of the screen, in units of the depth at "
-                       "infinity. 0 keeps everything behind the screen; high values can split very "
-                       "close objects into two images.");
+                       "infinity. Near objects approach it gradually; 0 keeps everything behind the "
+                       "screen, high values can split very close objects into two images.");
         Row("Defaults");
         if (ImGui::Button("Reset 3D defaults")) {
             const Gow3Settings::Values defaults;
@@ -453,10 +485,20 @@ void ImageTab() {
             Store(s.stereo_convergence, defaults.stereo_convergence.load(), true);
             Store(s.stereo_popout, defaults.stereo_popout.load(), true);
         }
-        Help("Depth, screen distance and pop-out limit back to their defaults (3%, 20, 1x).");
+        Help("Depth, screen distance and pop-out limit back to their defaults (3%, 20, 2x).");
         ImGui::PopID();
         ImGui::EndDisabled();
         ImGui::EndTable();
+    }
+    if (s.stereo) {
+        const char* warnings[4];
+        const int count = StereoWarnings(s.stereo_separation, s.stereo_convergence,
+                                         s.stereo_popout, warnings);
+        ImGui::PushTextWrapPos(0.0f);
+        for (int i = 0; i < count; ++i) {
+            ImGui::TextColored(ImVec4(0.85f, 0.72f, 0.45f, 1.0f), "! %s", warnings[i]);
+        }
+        ImGui::PopTextWrapPos();
     }
     ImGui::SeparatorText("Textures (applied on restart)");
     if (BeginRows("##textures")) {
@@ -1150,6 +1192,14 @@ bool HandleEvent(const SDL_Event& event) {
             if (down && !event.key.repeat) {
                 VideoCore::RequestScreenshot(VideoCore::ScreenshotRequest::GameOnly);
             }
+            return true;
+        }
+        if (down && !event.key.repeat && capture_key && event.key.key == SDLK_F10) {
+            auto& mode = Gow3Settings::Get().stereo_mask_debug;
+            mode = (mode + 1) % 3;
+            std::printf("Stereo: shadow mask patch %s\n",
+                        mode == 0 ? "on" : mode == 1 ? "inverted" : "off");
+            std::fflush(stdout);
             return true;
         }
         if (down && !event.key.repeat && capture_key && event.key.key == SDLK_F11) {

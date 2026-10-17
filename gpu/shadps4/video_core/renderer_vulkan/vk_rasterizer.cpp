@@ -2357,7 +2357,27 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, const PreparedStage* pre
                 }
                 push_data.AddOffset(binding.buffer, 0);
             }
-            buffer_infos.emplace_back(constant_ring->Handle(), ring->offset, ring->size);
+            // gow3 stereo: the shadow mask rebuilds positions with this eye's camera.
+            bool patched = false;
+            const int mask_debug = Gow3Settings::Get().stereo_mask_debug;
+            if (eye_draw && stage.pgm_hash == Stereo::ShadowMaskShader && ring->size == 96 &&
+                buffer_index == 0 && mask_debug != 2) {
+                std::array<float, 24> mask;
+                std::memcpy(mask.data(), constant_ring->Data(ring->offset), sizeof(mask));
+                if (Stereo::PatchShadowMask(mask.data(),
+                                            mask_debug == 1 ? -push_data.stereo_sep
+                                                            : push_data.stereo_sep,
+                                            push_data.stereo_conv)) {
+                    auto& stream = buffer_cache.GetStreamBuffer();
+                    buffer_infos.emplace_back(stream.Handle(),
+                                              stream.Copy(mask.data(), sizeof(mask), alignment),
+                                              sizeof(mask));
+                    patched = true;
+                }
+            }
+            if (!patched) {
+                buffer_infos.emplace_back(constant_ring->Handle(), ring->offset, ring->size);
+            }
         } else if (desc.IsSpecial()) {
             if (desc.buffer_type == Shader::BufferType::GdsBuffer) {
                 const auto* gds_buf = buffer_cache.GetGdsBuffer();

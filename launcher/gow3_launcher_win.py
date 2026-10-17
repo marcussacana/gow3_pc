@@ -292,7 +292,7 @@ INI_DEFAULTS = {'upscaler': 'fsr3', 'preset': '1',
                 'frames_queued': '1', 'cheat_very_hard': '0', 'cheat_double_jumps': '0',
                 'anisotropy': '0', 'vibration': '100',
                 'stereo': '0', 'stereo_mode': 'half', 'stereo_separation': '3.0', 'stereo_convergence': '20',
-                'stereo_popout': '1.0'}
+                'stereo_popout': '2.0'}
 DISPLAY_MODES = [('windowed', ('Windowed',)), ('borderless', ('Borderless',)), ('fullscreen', ('Fullscreen',))]
 ANISOTROPY = [('0', ('Game default',)), ('2', ('2x',)), ('4', ('4x',)), ('8', ('8x',)), ('16', ('16x',))]
 FPS_LIMITS = [('30', ('30',)), ('60', ('60',)), ('120', ('120',)), ('240', ('240',)), ('0', ('Unlimited',))]

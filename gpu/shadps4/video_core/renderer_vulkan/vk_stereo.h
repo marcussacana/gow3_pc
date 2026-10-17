@@ -54,6 +54,46 @@ static_assert(EyeSized(1920, 1080) && EyeSized(1920, 1079) && EyeSized(960, 540)
 static_assert(!EyeSized(2048, 2048) && !EyeSized(1, 1) && !EyeSized(64, 32) &&
               !EyeSized(512, 256) && !EyeSized(8, 9));
 static_assert(EyeSeparation(Right, 3.f) == 0.03f && EyeSeparation(Left, 3.f) == -0.03f);
+
+/// The screen-space shadow mask (docs/stereo.md, Research) rebuilds positions with the center
+/// camera from its 24 constants: v = (d * ndc.x, d * ndc.y, z', w'), z' = -c20 d + c22,
+/// w' = -c21 d + c23, shadow = v.x c[0..3] + v.y c[4..7] + z' c[8..11] + w' c[12..15].
+/// An eye sees d * ndc_center.x = d * ndc.x - sep d + sep conv (EmitStereo), affine in d: it
+/// folds into the z' and w' rows. False if z' and w' do not span d (left as they are).
+/// shortcut: ignores the pop-out limit (pixels nearer than conv / (1 + popout / 2)), fine for
+/// floors.
+constexpr u64 ShadowMaskShader = 0x3af97853811d0c07ull;
+constexpr bool PatchShadowMask(float* c, float sep, float conv) {
+    const float a = -sep, b = sep * conv; // solve alpha z' + beta w' = a d + b
+    const float det = c[21] * c[22] - c[20] * c[23];
+    if (det == 0.f) {
+        return false;
+    }
+    const float alpha = (a * c[23] + c[21] * b) / det;
+    const float beta = -(c[20] * b + c[22] * a) / det;
+    for (int k = 0; k < 4; ++k) {
+        c[8 + k] += alpha * c[k];
+        c[12 + k] += beta * c[k];
+    }
+    return true;
+}
+
+constexpr bool ShadowMaskSelfCheck() {
+    // The x row of a captured mask (first level, gameplay).
+    float c[24] = {7.13351f, 0, 0, 0, 0, 0, 0, 0, -3798.8f, 0, 0, 0, 3764.53f, 0, 0, 0,
+                   0, 0, 0, 0, -1.00007f, -1.f, -0.500018f, 0.f};
+    const auto shadow_x = [&](float d, float ndc_x) {
+        return d * ndc_x * c[0] + (-c[20] * d + c[22]) * c[8] + (-c[21] * d + c[23]) * c[12];
+    };
+    const float d = 50.f, sep = 0.03f, conv = 20.f;
+    const float center = shadow_x(d, 0.25f);
+    const float eye_ndc = 0.25f + sep * (1.f - conv / d);
+    const float unpatched = shadow_x(d, eye_ndc);
+    PatchShadowMask(c, sep, conv);
+    const float error = shadow_x(d, eye_ndc) - center, before = unpatched - center;
+    return error * error < 0.25f && before * before > 1.f; // (cancellation of ~2e5 terms)
+}
+static_assert(ShadowMaskSelfCheck());
 } // namespace Stereo
 
 class EyeTargets {

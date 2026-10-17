@@ -213,11 +213,19 @@ static void EmitStereo(EmitContext& ctx) {
                                  ctx.OpFSub(type, z,
                                             ctx.OpFMul(type, ctx.Constant(type, StereoDepthA), w)),
                                  ctx.Constant(type, StereoDepthB))};
-    // Parallax in units of the separation, 1 - conv / d, limited to -popout in front of the
-    // screen (1: as much as at infinity): close-ups (the menu's Kratos, d ~ 2) would leave the
-    // image.
+    // Parallax in units of the separation, 1 - conv / d (NVIDIA 3D Vision's formula), softly
+    // limited to -popout in front of the screen: linear down to the knee k = popout / 2, then
+    // -k - k e / (k + e) for the excess e, slope 1 at the knee and -popout as d -> 0. Close-ups
+    // (the menu's Kratos, d ~ 2) would leave the image; a hard limit flattened them into a plane.
     const Id ratio{ctx.OpFSub(type, one, ctx.OpFDiv(type, ctx.OpFMul(type, conv, w_over_d), w))};
-    const Id limited{ctx.OpFMax(type, ratio, ctx.OpFNegate(type, popout))};
+    const Id knee{ctx.OpFMul(type, popout, ctx.Constant(type, 0.5f))};
+    const Id excess{ctx.OpFMax(type, ctx.OpFSub(type, ctx.OpFNegate(type, ratio), knee),
+                               ctx.Constant(type, 0.f))};
+    const Id compressed{ctx.OpFSub(
+        type, ctx.OpFNegate(type, knee),
+        ctx.OpFDiv(type, ctx.OpFMul(type, knee, excess), ctx.OpFAdd(type, knee, excess)))};
+    const Id limited{ctx.OpSelect(type, ctx.OpFOrdLessThan(ctx.U1[1], ratio, ctx.OpFNegate(type, knee)),
+                                  compressed, ratio)};
     const Id parallax{ctx.OpFMul(type, w, limited)};
     const Id shift{ctx.OpSelect(type, ctx.OpFOrdEqual(ctx.U1[1], w, one), ctx.Constant(type, 0.f),
                                 ctx.OpFMul(type, sep, parallax))};
