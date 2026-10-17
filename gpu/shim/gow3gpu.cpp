@@ -24,12 +24,12 @@
 #include "../gow3gpu.h"
 #include "common/elf_info.h"
 #include "common/logging/log.h"
-#include "common/rdtsc.h"
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/libs.h"
 #include "core/memory.h"
 #include "core/signals.h"
 #include "sdl_window.h"
+#include "video_core/renderer_vulkan/movie_bars.h"
 #include "video_core/renderer_vulkan/vk_rasterizer.h"
 
 extern "C" {
@@ -44,8 +44,11 @@ typedef void (*RuntimeGpuRange)(uintptr_t address, uint64_t size);
 uint64_t runtime_process_time_us(void);
 uint64_t runtime_process_time_counter(void);
 uint64_t runtime_tsc_frequency(void);
+uint64_t runtime_read_tsc(void);
 int32_t* runtime_errno(void);
 void runtime_memory_set_gpu_hooks(RuntimeGpuRange map, RuntimeGpuRange unmap, RuntimeGpuRange invalidate);
+// runtime.c: exit counters (and the ISA site report), as on the guest's own exit
+void runtime_report(void);
 }
 
 Frontend::WindowSDL* g_window = nullptr;
@@ -131,7 +134,14 @@ void MemoryManager::CopySparseMemory(VAddr source, u8* dest, u64 size) {
 }
 bool MemoryManager::TryWriteBacking(void* address, const void* data, u64 size) {
     Gow3WriteLog::Note(reinterpret_cast<uintptr_t>(address), data, size, Gow3WriteLog::Backing);
-    return runtime_memory_write_backing(reinterpret_cast<uintptr_t>(address), data, size) != 0;
+    const bool written = runtime_memory_write_backing(reinterpret_cast<uintptr_t>(address), data, size) != 0;
+    // The write skipped page tracking: textures over it must reload (#138).
+    // ponytail: fence and label writes (<= 8 bytes) never hold texels, so they are left out;
+    // every one would send all texture bindings through the locked path.
+    if (written && rasterizer && size > 8) {
+        rasterizer->GetTextureCache().NoteBackingWrite(reinterpret_cast<VAddr>(address), size);
+    }
+    return written;
 }
 void AddressSpace::Protect(VAddr virtual_addr, u64 size, MemoryPermission perms) {
     Gow3Stats::Timer timer{Gow3Stats::t_protect};
@@ -155,7 +165,7 @@ boost::icl::interval_set<VAddr> AddressSpace::GetUsableRegions() {
 // Kernel services the vendored libraries call directly.
 namespace Libraries::Kernel {
 u64 PS4_SYSV_ABI sceKernelGetTscFrequency() { return runtime_tsc_frequency(); }
-u64 PS4_SYSV_ABI sceKernelReadTsc() { return Common::FencedRDTSC(); }
+u64 PS4_SYSV_ABI sceKernelReadTsc() { return runtime_read_tsc(); }
 u64 PS4_SYSV_ABI sceKernelGetProcessTime() { return runtime_process_time_us(); }
 u64 PS4_SYSV_ABI sceKernelGetProcessTimeCounter() { return runtime_process_time_counter(); }
 u64 PS4_SYSV_ABI sceKernelGetProcessTimeCounterFrequency() { return 1'000'000'000; }
@@ -235,6 +245,7 @@ extern "C" int gow3gpu_init(const Gow3GpuConfig* config) {
             SDL_Delay(2);
         }
         LOG_INFO(Frontend, "Window closed by user");
+        runtime_report();
         std::fflush(stdout);
         std::_Exit(0);
     });
@@ -314,19 +325,39 @@ int* PS4_SYSV_ABI __Error() {
 }
 } // namespace Libraries::Kernel
 
-// RenderDoc capture hooks: not used by the port.
+// RenderDoc capture hooks: not used by the port. Screenshots (F12) are taken by the presenter:
+// the game's frame without the overlay.
 namespace VideoCore {
+namespace {
+std::atomic<u32> screenshot_requests{0};
+}
 void LoadRenderDoc() {}
 void StartCapture() {}
 void EndCapture() {}
 void TriggerCapture() {}
 void SetOutputDir(const std::filesystem::path&, const std::string&) {}
 bool IsRenderDocLoaded() { return false; }
-void RequestScreenshot(ScreenshotRequest) {}
-u32 ConsumeGameOnlyScreenshotRequests() { return 0; }
+void RequestScreenshot(ScreenshotRequest request) {
+    if (request != ScreenshotRequest::None) {
+        screenshot_requests.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+u32 ConsumeGameOnlyScreenshotRequests() {
+    return screenshot_requests.exchange(0, std::memory_order_acq_rel);
+}
 u32 ConsumeWithOverlaysScreenshotRequests() { return 0; }
-ScreenshotRequests ConsumeScreenshotRequests() { return {}; }
+ScreenshotRequests ConsumeScreenshotRequests() {
+    return {.game_only_count = ConsumeGameOnlyScreenshotRequests(), .with_overlays_count = 0};
+}
 } // namespace VideoCore
+
+extern "C" int gow3gpu_vibration_percent(void) {
+    return Gow3Settings::Get().vibration.load(std::memory_order_relaxed);
+}
+
+extern "C" void gow3gpu_movie_picture(void) {
+    Vulkan::MovieBars::Cutscenes().NotePicture(Vulkan::MovieBars::NowMs());
+}
 
 extern "C" int gow3gpu_overlay_captures_input(void) {
     return Gow3Overlay::CapturesInput() ? 1 : 0;
