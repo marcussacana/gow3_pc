@@ -53,6 +53,8 @@ ldd "$dest/bin/gow3-probe.exe" "$dest/bin/gow3-gpu-capabilities.exe" |
     awk '/\/clang64\/bin\// {print $3}' | sort -u | while read -r dll; do
         cp -u "$dll" "$dest/bin/"
     done
+# The Leia SR bridge (stereo 3D on Leia monitors), when built (packaging/windows/build_leia.sh).
+[[ -f out/gow3_leia.dll ]] && cp out/gow3_leia.dll "$dest/bin/"
 cp -r scripts patches "$dest/"
 cp run.py LICENSE README.md packaging/windows/README-Windows.txt "$dest/"
 find "$dest" -name __pycache__ -prune -exec rm -r {} +
